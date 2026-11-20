@@ -32,17 +32,35 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 COLORS = {
-    "sidebar": "#1a1a2e",
-    "sidebar_hover": "#16213e",
-    "accent": "#0f3460",
-    "accent_light": "#e94560",
-    "card_bg": "#16213e",
-    "success": "#2ecc71",
-    "warning": "#f39c12",
-    "danger": "#e74c3c",
-    "text": "#ecf0f1",
-    "text_dim": "#95a5a6",
+    "bg":           "#0a0f1e",
+    "sidebar":      "#0d1424",
+    "sidebar_hover":"#132033",
+    "accent":       "#0d9488",
+    "accent_light": "#2dd4bf",
+    "card_bg":      "#0d1424",
+    "success":      "#0d9488",
+    "warning":      "#d97706",
+    "danger":       "#dc2626",
+    "info":         "#0891b2",
+    "text":         "#e2e8f0",
+    "text_dim":     "#94a3b8",
+    "text_muted":   "#4a6080",
+    "border":       "#1a2235",
 }
+
+
+def _icon_bg(hex_color: str) -> str:
+    """Return a dark-tinted background colour for icon badges."""
+    try:
+        h = hex_color.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        br, bgg, bb = 13, 20, 36          # #0d1424 dark card bg
+        nr = int(br + (r - br) * 0.18)
+        ng = int(bgg + (g - bgg) * 0.18)
+        nb = int(bb + (b - bb) * 0.18)
+        return f"#{nr:02x}{ng:02x}{nb:02x}"
+    except Exception:
+        return "#1a2235"
 
 
 class App(ctk.CTk):
@@ -209,7 +227,7 @@ class GlobalSearchPopup(ctk.CTkToplevel):
         super().__init__(parent)
         self.overrideredirect(True)
         self.attributes("-topmost", True)
-        self.configure(fg_color="#16213e")
+        self.configure(fg_color=COLORS["card_bg"])
 
         total = sum(len(v) for v in results.values())
         height = min(400, max(60, total * 46 + len([k for k, v in results.items() if v]) * 28 + 12))
@@ -546,130 +564,197 @@ class AddEditUserDialog(ctk.CTkToplevel):
 
 class Sidebar(ctk.CTkFrame):
     NAV_ITEMS = [
-        ("dashboard", "🏠  Dashboard"),
-        ("orders", "📦  Orders"),
-        ("stock", "🗃  Stock"),
-        ("stock_valuation", "📊  Stock Valuation"),
-        ("clients", "👥  Clients"),
-        ("invoices", "🧾  Invoices"),
-        ("payments", "💳  Payments Received"),
-        ("purchases", "🛒  Purchases"),
-        ("tds", "🧾  TDS Tracker"),
-        ("cdn", "📝  Credit/Debit Notes"),
-        ("godowns", "🏭  Godowns"),
-        ("fixed_assets", "🏗  Fixed Assets"),
-        ("payroll", "👷  Payroll"),
-        ("advances", "💵  Advance Payments"),
-        ("cheques", "🏦  Cheque / PDC"),
-        ("alerts", "🔔  Alerts"),
-        ("expenses", "💸  Expenses"),
-        ("ledger", "📒  Ledger"),
-        ("reports", "📊  Reports"),
-        ("sales_summary", "📈  Sales Summary"),
-        ("balance_sheet", "🏦  Balance Sheet"),
-        ("trial_balance", "⚖  Trial Balance"),
-        ("cash_flow", "💵  Cash Flow"),
-        ("client_ledger", "📋  Client Ledger"),
-        ("aging", "📅  Debtors Aging"),
-        ("reminders", "📨  Payment Reminders"),
-        ("gst_reports", "🧾  GST Reports"),
-        ("bank_recon",  "🏦  Bank Recon"),
-        ("day_book",    "📔  Day Book"),
-        ("settings", "⚙  Settings"),
+        ("dashboard",      "⊞  Dashboard"),
+        ("orders",         "≡  Orders"),
+        ("stock",          "▦  Stock"),
+        ("stock_valuation","◈  Stock Valuation"),
+        ("clients",        "◉  Clients"),
+        ("invoices",       "◧  Invoices"),
+        ("payments",       "◈  Payments Received"),
+        ("purchases",      "⊠  Purchases"),
+        ("tds",            "◧  TDS Tracker"),
+        ("cdn",            "◩  Credit/Debit Notes"),
+        ("godowns",        "⊟  Godowns"),
+        ("fixed_assets",   "⊞  Fixed Assets"),
+        ("payroll",        "◉  Payroll"),
+        ("advances",       "◈  Advance Payments"),
+        ("cheques",        "▦  Cheque / PDC"),
+        ("alerts",         "◎  Alerts"),
+        ("expenses",       "◈  Expenses"),
+        ("ledger",         "≡  Ledger"),
+        ("reports",        "◈  Reports"),
+        ("sales_summary",  "◈  Sales Summary"),
+        ("balance_sheet",  "▦  Balance Sheet"),
+        ("trial_balance",  "⊟  Trial Balance"),
+        ("cash_flow",      "◈  Cash Flow"),
+        ("client_ledger",  "◧  Client Ledger"),
+        ("aging",          "◎  Debtors Aging"),
+        ("reminders",      "◉  Payment Reminders"),
+        ("gst_reports",    "◧  GST Reports"),
+        ("bank_recon",     "▦  Bank Recon"),
+        ("day_book",       "≡  Day Book"),
+        ("settings",       "⚙  Settings"),
+    ]
+
+    NAV_SECTIONS = [
+        ("MAIN",    ["dashboard", "orders", "stock", "stock_valuation", "clients"]),
+        ("SALES",   ["invoices", "payments", "purchases", "cdn", "tds"]),
+        ("FINANCE", ["advances", "cheques", "expenses", "ledger"]),
+        ("ASSETS",  ["godowns", "fixed_assets", "payroll"]),
+        ("REPORTS", ["reports", "sales_summary", "balance_sheet", "trial_balance",
+                     "cash_flow", "client_ledger", "aging", "gst_reports",
+                     "bank_recon", "day_book"]),
+        ("OTHER",   ["reminders", "alerts", "settings"]),
     ]
 
     def __init__(self, parent, on_navigate):
-        super().__init__(parent, width=220, corner_radius=0, fg_color="#1a1a2e")
+        super().__init__(parent, width=230, corner_radius=0,
+                         fg_color=COLORS["sidebar"])
         self.app = parent
         self.on_navigate = on_navigate
         self.buttons = {}
+        self.strips  = {}
         self.grid_propagate(False)
         self._search_popup = None
         self._search_after = None
         self._build()
 
     def _build(self):
-        # ── fixed bottom strip (must be packed before the expanding middle) ──
-        ctk.CTkLabel(
-            self, text="v1.0.0", text_color="#555",
-            font=ctk.CTkFont(size=10),
-        ).pack(side="bottom", pady=(0, 8))
+        # ── Bottom: user row + logout ─────────────────────────────────────────
+        bottom = ctk.CTkFrame(self, fg_color=COLORS["bg"], corner_radius=0)
+        bottom.pack(side="bottom", fill="x")
 
-        # Logout button
+        ctk.CTkFrame(bottom, fg_color=COLORS["border"], height=1,
+                     corner_radius=0).pack(fill="x")
+
+        ctk.CTkLabel(bottom, text="v2.0.0", text_color=COLORS["text_muted"],
+                     font=ctk.CTkFont(size=9)).pack(pady=(2, 4))
+
         ctk.CTkButton(
-            self, text="🚪  Logout",
-            font=ctk.CTkFont(size=12),
-            fg_color="#2c3e50", hover_color="#e74c3c",
-            height=32, corner_radius=6,
+            bottom, text="⎋  Sign Out",
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent", hover_color="#2a1515",
+            text_color=COLORS["text_muted"], height=30, corner_radius=6,
+            border_width=1, border_color=COLORS["border"],
             command=self.app.logout,
-        ).pack(side="bottom", padx=12, pady=(0, 4), fill="x")
+        ).pack(padx=12, pady=(0, 8), fill="x")
 
-        # Logged-in user info
-        user = self.app.current_user
-        role_label = "Admin" if user.get("role") == "admin" else "Staff"
-        ctk.CTkLabel(
-            self,
-            text=f"👤  {user.get('full_name') or user.get('username')}  •  {role_label}",
-            font=ctk.CTkFont(size=10),
-            text_color="#7f8c8d",
-        ).pack(side="bottom", pady=(0, 2))
+        # User row
+        user   = self.app.current_user
+        name   = user.get("full_name") or user.get("username", "User")
+        role_l = "Admin" if user.get("role") == "admin" else "Staff"
+        inits  = "".join(w[0].upper() for w in name.split()[:2]) or "U"
 
-        self.alert_badge = ctk.CTkLabel(
-            self, text="", font=ctk.CTkFont(size=11),
-            text_color="#e94560", fg_color="transparent",
-        )
-        self.alert_badge.pack(side="bottom", pady=2)
+        user_row = ctk.CTkFrame(bottom, fg_color="transparent")
+        user_row.pack(fill="x", padx=12, pady=(8, 0))
 
-        # ── fixed top: logo + search ─────────────────────────────────────────
-        logo = ctk.CTkLabel(
-            self, text="📊 StockAccounts\nPro",
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#e94560",
-        )
-        logo.pack(pady=(24, 8), padx=16)
+        av = ctk.CTkFrame(user_row, width=32, height=32, corner_radius=16,
+                          fg_color=COLORS["accent"])
+        av.pack(side="left")
+        av.pack_propagate(False)
+        ctk.CTkLabel(av, text=inits, font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color="#fff").pack(expand=True)
 
-        ctk.CTkLabel(self, text="─" * 22, text_color="#2c3e50").pack(pady=(0, 4))
+        info = ctk.CTkFrame(user_row, fg_color="transparent")
+        info.pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(info, text=name[:20], font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=COLORS["text"]).pack(anchor="w")
+        ctk.CTkLabel(info, text=role_l, font=ctk.CTkFont(size=9),
+                     text_color=COLORS["text_muted"]).pack(anchor="w")
 
+        self.alert_badge = ctk.CTkLabel(bottom, text="", font=ctk.CTkFont(size=10),
+                                        text_color=COLORS["warning"],
+                                        fg_color="transparent")
+        self.alert_badge.pack(pady=(4, 0))
+
+        # ── Top: logo ────────────────────────────────────────────────────────
+        logo_frame = ctk.CTkFrame(self, fg_color="transparent")
+        logo_frame.pack(fill="x", padx=16, pady=(18, 12))
+
+        mark = ctk.CTkFrame(logo_frame, width=38, height=38, corner_radius=10,
+                            fg_color=COLORS["accent"])
+        mark.pack(side="left")
+        mark.pack_propagate(False)
+        ctk.CTkLabel(mark, text="SA", font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color="#fff").pack(expand=True)
+
+        nm = ctk.CTkFrame(logo_frame, fg_color="transparent")
+        nm.pack(side="left", padx=(10, 0))
+        ctk.CTkLabel(nm, text="StockAccounts Pro",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=COLORS["text"]).pack(anchor="w")
+        ctk.CTkLabel(nm, text=f"v2.0  ·  {role_l}",
+                     font=ctk.CTkFont(size=9),
+                     text_color=COLORS["text_muted"]).pack(anchor="w")
+
+        ctk.CTkFrame(self, fg_color=COLORS["border"], height=1,
+                     corner_radius=0).pack(fill="x")
+
+        # ── Search ───────────────────────────────────────────────────────────
         self._search_var = ctk.StringVar()
         self._search_entry = ctk.CTkEntry(
             self, textvariable=self._search_var,
-            placeholder_text="🔍  Search…",
-            width=190, height=32,
-            font=ctk.CTkFont(size=12),
-            fg_color="#0d1117", border_color="#2c3e50",
-            text_color="#ecf0f1",
+            placeholder_text="  Search…",
+            width=200, height=32,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLORS["bg"], border_color=COLORS["border"],
+            text_color=COLORS["text_dim"],
         )
-        self._search_entry.pack(padx=14, pady=(0, 8))
+        self._search_entry.pack(padx=12, pady=10)
         self._search_var.trace_add("write", self._on_search_change)
         self._search_entry.bind("<Escape>", self._close_popup)
-        self._search_entry.bind("<FocusOut>", lambda e: self.after(200, self._close_popup))
+        self._search_entry.bind("<FocusOut>",
+                                lambda e: self.after(200, self._close_popup))
 
-        ctk.CTkLabel(self, text="─" * 22, text_color="#2c3e50").pack(pady=(0, 4))
+        ctk.CTkFrame(self, fg_color=COLORS["border"], height=1,
+                     corner_radius=0).pack(fill="x")
 
-        # ── scrollable nav area ───────────────────────────────────────────────
+        # ── Scrollable nav ───────────────────────────────────────────────────
         nav_scroll = ctk.CTkScrollableFrame(
             self, fg_color="transparent", corner_radius=0,
-            scrollbar_button_color="#2c3e50",
-            scrollbar_button_hover_color="#3498db",
+            scrollbar_button_color=COLORS["border"],
+            scrollbar_button_hover_color=COLORS["accent"],
         )
-        nav_scroll.pack(fill="both", expand=True, padx=0, pady=0)
+        nav_scroll.pack(fill="both", expand=True)
 
-        role = self.app.current_user.get("role", "staff")
-        staff_pages = {"dashboard", "orders", "stock", "clients", "invoices", "payments", "alerts"}
+        role      = self.app.current_user.get("role", "staff")
+        staff_pgs = {"dashboard","orders","stock","clients","invoices","payments","alerts"}
+        nav_dict  = dict(self.NAV_ITEMS)
 
-        for key, label in self.NAV_ITEMS:
-            if role != "admin" and key not in staff_pages:
+        for section_name, keys in self.NAV_SECTIONS:
+            visible = [k for k in keys
+                       if role == "admin" or k in staff_pgs]
+            if not visible:
                 continue
-            btn = ctk.CTkButton(
-                nav_scroll, text=label, anchor="w",
-                font=ctk.CTkFont(size=13),
-                fg_color="transparent", hover_color="#16213e",
-                text_color="#ecf0f1", height=42,
-                corner_radius=8,
-                command=lambda k=key: self.on_navigate(k),
-            )
-            btn.pack(fill="x", padx=10, pady=2)
-            self.buttons[key] = btn
+
+            ctk.CTkLabel(nav_scroll, text=section_name,
+                         font=ctk.CTkFont(size=9, weight="bold"),
+                         text_color=COLORS["text_muted"],
+                         anchor="w").pack(fill="x", padx=16, pady=(10, 2))
+
+            for key in visible:
+                label = nav_dict.get(key, key)
+                row = ctk.CTkFrame(nav_scroll, fg_color="transparent",
+                                   corner_radius=0)
+                row.pack(fill="x", pady=1)
+
+                strip = ctk.CTkFrame(row, width=3,
+                                     fg_color="transparent", corner_radius=0)
+                strip.pack(side="left", fill="y", pady=3)
+
+                btn = ctk.CTkButton(
+                    row, text=label, anchor="w",
+                    font=ctk.CTkFont(size=12),
+                    fg_color="transparent",
+                    hover_color=COLORS["sidebar_hover"],
+                    text_color=COLORS["text_muted"], height=36,
+                    corner_radius=6,
+                    command=lambda k=key: self.on_navigate(k),
+                )
+                btn.pack(side="left", fill="x", expand=True, padx=(2, 10))
+
+                self.buttons[key] = btn
+                self.strips[key]  = strip
 
     def _on_search_change(self, *_):
         if self._search_after:
@@ -705,7 +790,15 @@ class Sidebar(ctk.CTkFrame):
 
     def set_active(self, key):
         for k, btn in self.buttons.items():
-            btn.configure(fg_color="#0f3460" if k == key else "transparent")
+            is_act = k == key
+            btn.configure(
+                fg_color=COLORS["sidebar_hover"] if is_act else "transparent",
+                text_color=COLORS["accent_light"] if is_act else COLORS["text_muted"],
+            )
+        for k, strip in self.strips.items():
+            strip.configure(
+                fg_color=COLORS["accent"] if k == key else "transparent"
+            )
 
     def update_alert_badge(self, count):
         if count:
@@ -741,14 +834,14 @@ def _run_export(export_fn, default_name, *args):
         messagebox.showerror("Export Error", str(e))
 
 def _export_btns(parent, pdf_cmd, xl_cmd, csv_cmd):
-    ctk.CTkFrame(parent, fg_color="#2c3e50", width=1, height=28
+    ctk.CTkFrame(parent, fg_color=COLORS["border"], width=1, height=28
                  ).pack(side="left", padx=10, pady=4, fill="y")
-    ctk.CTkLabel(parent, text="Export:", text_color="#95a5a6",
+    ctk.CTkLabel(parent, text="Export:", text_color=COLORS["text_muted"],
                  font=ctk.CTkFont(size=10)).pack(side="left", padx=(0, 3))
     for label, cmd, fg, hov in [
-        ("📄 PDF",  pdf_cmd, "#1a3a5c", "#2980b9"),
-        ("📊 Excel", xl_cmd, "#1a3a2a", "#27ae60"),
-        ("CSV",     csv_cmd, "#2c3e50", "#34495e"),
+        ("PDF",   pdf_cmd, "#062530", "#0891b2"),
+        ("Excel", xl_cmd,  "#062530", "#0d9488"),
+        ("CSV",   csv_cmd, COLORS["border"], "#1a2235"),
     ]:
         ctk.CTkButton(parent, text=label, width=72 if "Excel" in label else 60,
                       height=34, fg_color=fg, hover_color=hov,
@@ -874,7 +967,7 @@ class AIInsightsDialog(ctk.CTkToplevel):
 
 class BasePage(ctk.CTkFrame):
     def __init__(self, parent, app):
-        super().__init__(parent, fg_color="#0d1117", corner_radius=0)
+        super().__init__(parent, fg_color=COLORS["bg"], corner_radius=0)
         self.app = app
 
     def refresh(self):
@@ -882,23 +975,44 @@ class BasePage(ctk.CTkFrame):
 
     def _header(self, title, subtitle=""):
         frame = ctk.CTkFrame(self, fg_color="transparent")
-        frame.pack(fill="x", padx=24, pady=(24, 8))
+        frame.pack(fill="x", padx=24, pady=(22, 10))
         ctk.CTkLabel(frame, text=title,
                      font=ctk.CTkFont(size=22, weight="bold"),
-                     text_color="#ecf0f1").pack(anchor="w")
+                     text_color=COLORS["text"]).pack(anchor="w")
         if subtitle:
             ctk.CTkLabel(frame, text=subtitle,
-                         font=ctk.CTkFont(size=12),
-                         text_color="#95a5a6").pack(anchor="w")
+                         font=ctk.CTkFont(size=11),
+                         text_color=COLORS["text_muted"]).pack(anchor="w", pady=(2, 0))
+        ctk.CTkFrame(self, fg_color=COLORS["border"], height=1,
+                     corner_radius=0).pack(fill="x", padx=0)
 
-    def _card(self, parent, title, value, color="#2ecc71", icon=""):
-        f = ctk.CTkFrame(parent, fg_color="#16213e", corner_radius=12)
-        ctk.CTkLabel(f, text=icon + " " + title,
-                     font=ctk.CTkFont(size=11),
-                     text_color="#95a5a6").pack(padx=16, pady=(14, 2), anchor="w")
+    def _card(self, parent, title, value, color=None, icon="", sub=""):
+        if color is None:
+            color = COLORS["accent"]
+        f = ctk.CTkFrame(parent, fg_color=COLORS["card_bg"], corner_radius=10,
+                         border_width=1, border_color=COLORS["border"])
+        # Icon badge
+        top = ctk.CTkFrame(f, fg_color="transparent")
+        top.pack(fill="x", padx=14, pady=(14, 0))
+        if icon:
+            ic = ctk.CTkFrame(top, width=34, height=34, corner_radius=8,
+                              fg_color=_icon_bg(color))
+            ic.pack(side="left")
+            ic.pack_propagate(False)
+            ctk.CTkLabel(ic, text=icon,
+                         font=ctk.CTkFont(size=15)).pack(expand=True)
+        # Labels
+        ctk.CTkLabel(f, text=title,
+                     font=ctk.CTkFont(size=10),
+                     text_color=COLORS["text_muted"]).pack(padx=14, pady=(8, 2), anchor="w")
         ctk.CTkLabel(f, text=str(value),
-                     font=ctk.CTkFont(size=26, weight="bold"),
-                     text_color=color).pack(padx=16, pady=(0, 14), anchor="w")
+                     font=ctk.CTkFont(size=22, weight="bold"),
+                     text_color=COLORS["text"]).pack(padx=14, pady=(0, 2), anchor="w")
+        if sub:
+            ctk.CTkLabel(f, text=sub, font=ctk.CTkFont(size=10),
+                         text_color=color).pack(padx=14, pady=(0, 12), anchor="w")
+        else:
+            ctk.CTkFrame(f, fg_color="transparent", height=12).pack()
         return f
 
 
@@ -924,12 +1038,12 @@ class DashboardPage(BasePage):
         for i in range(4):
             fin_outer.columnconfigure(i, weight=1)
 
-        net_color = "#2ecc71" if stats["net_this_month"] >= 0 else "#e74c3c"
+        net_color = COLORS["success"] if stats["net_this_month"] >= 0 else COLORS["danger"]
         fin_cards = [
-            ("Revenue This Month", f"₹ {stats['revenue_this_month']:,.0f}", "#2ecc71", "💰"),
-            ("Outstanding",        f"₹ {stats['outstanding']:,.0f}",        "#f39c12", "📤"),
-            ("Expenses This Month",f"₹ {stats['expenses_this_month']:,.0f}","#e74c3c",  "💸"),
-            ("Net This Month",     f"₹ {stats['net_this_month']:,.0f}",     net_color,  "📈"),
+            ("Revenue This Month",  f"₹ {stats['revenue_this_month']:,.0f}", COLORS["accent"],  "💰"),
+            ("Outstanding",         f"₹ {stats['outstanding']:,.0f}",        COLORS["warning"], "📤"),
+            ("Expenses This Month", f"₹ {stats['expenses_this_month']:,.0f}",COLORS["danger"],  "💸"),
+            ("Net This Month",      f"₹ {stats['net_this_month']:,.0f}",     net_color,         "📈"),
         ]
         for i, (title, val, color, icon) in enumerate(fin_cards):
             c = self._card(fin_outer, title, val, color, icon)
@@ -941,32 +1055,36 @@ class DashboardPage(BasePage):
         for i in range(4):
             ops_outer.columnconfigure(i, weight=1)
 
-        overdue_color = "#e74c3c" if stats["overdue_count"] > 0 else "#2ecc71"
+        overdue_color = COLORS["danger"] if stats["overdue_count"] > 0 else COLORS["success"]
         ops_cards = [
-            ("Clients",        stats["total_clients"],   "#3498db", "👥"),
-            ("Products",       stats["total_products"],  "#9b59b6", "📦"),
-            ("Pending Orders", stats["pending_orders"],  "#f39c12", "⏳"),
-            ("Overdue Invoices",stats["overdue_count"],  overdue_color, "🔔"),
+            ("Clients",         stats["total_clients"],  COLORS["info"],    "👥"),
+            ("Products",        stats["total_products"], COLORS["accent"],   "📦"),
+            ("Pending Orders",  stats["pending_orders"], COLORS["warning"],  "⏳"),
+            ("Overdue Invoices",stats["overdue_count"],  overdue_color,      "🔔"),
         ]
         for i, (title, val, color, icon) in enumerate(ops_cards):
             c = self._card(ops_outer, title, val, color, icon)
             c.grid(row=0, column=i, padx=6, pady=4, sticky="ew")
 
         # ── Quick Actions bar ─────────────────────────────────────────────────
-        qa_frame = ctk.CTkFrame(self, fg_color="#16213e", corner_radius=12)
+        qa_frame = ctk.CTkFrame(self, fg_color=COLORS["card_bg"], corner_radius=10,
+                               border_width=1, border_color=COLORS["border"])
         qa_frame.pack(fill="x", padx=24, pady=(0, 10))
         ctk.CTkLabel(qa_frame, text="Quick Actions",
-                     font=ctk.CTkFont(size=11), text_color="#95a5a6").pack(side="left", padx=16, pady=12)
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=COLORS["text_muted"]).pack(side="left", padx=16, pady=12)
         for label, page in [
-            ("🧾  New Invoice",   "invoices"),
-            ("💸  Record Expense","expenses"),
-            ("📊  Reports",       "reports"),
-            ("👥  Add Client",    "clients"),
+            ("+ New Invoice",    "invoices"),
+            ("+ Record Expense", "expenses"),
+            ("  Reports",        "reports"),
+            ("  Add Client",     "clients"),
         ]:
             ctk.CTkButton(
-                qa_frame, text=label, width=140, height=32,
-                fg_color="#0f3460", hover_color="#1a4a7a",
-                font=ctk.CTkFont(size=12),
+                qa_frame, text=label, width=130, height=30,
+                fg_color=COLORS["accent"], hover_color="#0a7c72",
+                text_color="#fff",
+                font=ctk.CTkFont(size=11),
+                corner_radius=6,
                 command=lambda p=page: self.app._show_page(p),
             ).pack(side="left", padx=6, pady=10)
 
