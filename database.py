@@ -270,6 +270,13 @@ def _migrate_db():
             ("ewb_username",      "TEXT    DEFAULT ''"),
             ("ewb_password",      "TEXT    DEFAULT ''"),
             ("ewb_sandbox",       "INTEGER DEFAULT 1"),
+            # SMTP email settings
+            ("smtp_host",         "TEXT    DEFAULT 'smtp.gmail.com'"),
+            ("smtp_port",         "INTEGER DEFAULT 587"),
+            ("smtp_user",         "TEXT    DEFAULT ''"),
+            ("smtp_password",     "TEXT    DEFAULT ''"),
+            ("smtp_tls",          "INTEGER DEFAULT 1"),
+            ("smtp_from_name",    "TEXT    DEFAULT ''"),
         ]:
             if col not in fs_cols:
                 conn.execute(f"ALTER TABLE firm_settings ADD COLUMN {col} {ddl}")
@@ -1182,7 +1189,10 @@ def save_firm_settings(firm_name, address, city, state, pincode, gstin,
                        default_gst_rate=18.0, fiscal_year_start=4, upi_id="",
                        irp_client_id="", irp_client_secret="",
                        irp_username="", irp_password="", einvoice_sandbox=1,
-                       ewb_username="", ewb_password="", ewb_sandbox=1):
+                       ewb_username="", ewb_password="", ewb_sandbox=1,
+                       smtp_host="smtp.gmail.com", smtp_port=587,
+                       smtp_user="", smtp_password="", smtp_tls=1,
+                       smtp_from_name=""):
     with get_connection() as conn:
         conn.execute(
             """UPDATE firm_settings SET firm_name=?,address=?,city=?,state=?,pincode=?,
@@ -1191,13 +1201,16 @@ def save_firm_settings(firm_name, address, city, state, pincode, gstin,
                invoice_prefix=?,default_due_days=?,default_gst_rate=?,fiscal_year_start=?,
                upi_id=?,irp_client_id=?,irp_client_secret=?,
                irp_username=?,irp_password=?,einvoice_sandbox=?,
-               ewb_username=?,ewb_password=?,ewb_sandbox=?
+               ewb_username=?,ewb_password=?,ewb_sandbox=?,
+               smtp_host=?,smtp_port=?,smtp_user=?,smtp_password=?,
+               smtp_tls=?,smtp_from_name=?
                WHERE id=1""",
             (firm_name, address, city, state, pincode, gstin, phone, email,
              bank_name, bank_account, bank_ifsc, bank_branch, terms, signature_name,
              invoice_prefix, default_due_days, default_gst_rate, fiscal_year_start, upi_id,
              irp_client_id, irp_client_secret, irp_username, irp_password, einvoice_sandbox,
-             ewb_username, ewb_password, ewb_sandbox),
+             ewb_username, ewb_password, ewb_sandbox,
+             smtp_host, smtp_port, smtp_user, smtp_password, smtp_tls, smtp_from_name),
         )
         conn.commit()
 

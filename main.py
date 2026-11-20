@@ -2448,6 +2448,11 @@ class InvoicesPage(BasePage):
                               font=ctk.CTkFont(size=10),
                               command=lambda iid=inv["id"]: self._whatsapp_share(iid)
                               ).pack(side="left", padx=2)
+                ctk.CTkButton(row, text="✉ Email", width=58, height=26,
+                              fg_color="#6c3483", hover_color="#7d3c98",
+                              font=ctk.CTkFont(size=10),
+                              command=lambda iid=inv["id"]: self._email_share(iid)
+                              ).pack(side="left", padx=2)
                 if inv["status"] == "Draft":
                     ctk.CTkButton(row, text="✉ Send", width=58, height=26,
                                   fg_color="#1a3a5c", hover_color="#2355c2",
@@ -2519,6 +2524,9 @@ class InvoicesPage(BasePage):
 
     def _whatsapp_share(self, invoice_id):
         WhatsAppShareDialog(self, invoice_id)
+
+    def _email_share(self, invoice_id):
+        EmailShareDialog(self, invoice_id)
 
     def _export_pdf(self):
         invoices = [dict(r) for r in db.get_all_invoices()]
@@ -4038,6 +4046,193 @@ class WhatsAppShareDialog(ctk.CTkToplevel):
             )
 
 
+# ── Email Invoice Share Dialog ────────────────────────────────────────────────
+
+class EmailShareDialog(ctk.CTkToplevel):
+    """Send invoice as email with PDF attachment via configured SMTP."""
+
+    def __init__(self, parent, invoice_id: int):
+        super().__init__(parent)
+        self.invoice_id = invoice_id
+        self.title("Send Invoice via Email")
+        self.geometry("560x600")
+        self.resizable(False, False)
+        self.grab_set()
+
+        inv, _items, firm = db.get_invoice_full(invoice_id)
+        self._inv  = dict(inv)
+        self._firm = dict(firm) if firm else {}
+
+        # SMTP settings
+        fs = db.get_firm_settings()
+        self._fs = dict(fs) if fs else {}
+
+        inv_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Invoices")
+        os.makedirs(inv_dir, exist_ok=True)
+        self._pdf_path = os.path.join(inv_dir, f"{self._inv.get('invoice_number','Invoice')}.pdf")
+
+        frm = ctk.CTkFrame(self, fg_color="transparent")
+        frm.pack(fill="both", expand=True, padx=20, pady=14)
+
+        ctk.CTkLabel(frm, text="✉  Send Invoice by Email",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 10))
+
+        # Invoice summary card
+        card = ctk.CTkFrame(frm, fg_color="#1a3a5c", corner_radius=8)
+        card.pack(fill="x", pady=(0, 12))
+        ctk.CTkLabel(card,
+                     text=(f"Invoice: {self._inv.get('invoice_number','')}   |   "
+                           f"Date: {self._inv.get('invoice_date','')}   |   "
+                           f"Amount: ₹{self._inv.get('grand_total',0):,.2f}"),
+                     font=ctk.CTkFont(size=11), text_color="#ecf0f1").pack(padx=12, pady=8)
+
+        # Check SMTP config
+        if not self._fs.get("smtp_user"):
+            ctk.CTkLabel(frm,
+                         text="⚠  SMTP not configured. Go to Settings → 📧 Email to set it up.",
+                         font=ctk.CTkFont(size=11), text_color=COLORS["warning"]).pack(anchor="w", pady=(0, 10))
+
+        # To
+        ctk.CTkLabel(frm, text="To *", font=ctk.CTkFont(size=11),
+                     text_color=COLORS["text_dim"]).pack(anchor="w")
+        self._to_var = ctk.StringVar(value=self._inv.get("client_email") or "")
+        ctk.CTkEntry(frm, textvariable=self._to_var, width=500,
+                     placeholder_text="customer@example.com").pack(anchor="w", pady=(2, 8))
+
+        # CC
+        ctk.CTkLabel(frm, text="CC", font=ctk.CTkFont(size=11),
+                     text_color=COLORS["text_dim"]).pack(anchor="w")
+        self._cc_var = ctk.StringVar(value=self._fs.get("email", ""))
+        ctk.CTkEntry(frm, textvariable=self._cc_var, width=500).pack(anchor="w", pady=(2, 8))
+
+        # Subject
+        ctk.CTkLabel(frm, text="Subject", font=ctk.CTkFont(size=11),
+                     text_color=COLORS["text_dim"]).pack(anchor="w")
+        self._subj_var = ctk.StringVar(value=self._default_subject())
+        ctk.CTkEntry(frm, textvariable=self._subj_var, width=500).pack(anchor="w", pady=(2, 8))
+
+        # Body
+        ctk.CTkLabel(frm, text="Message", font=ctk.CTkFont(size=11),
+                     text_color=COLORS["text_dim"]).pack(anchor="w")
+        self._body_box = ctk.CTkTextbox(frm, height=150, width=500)
+        self._body_box.pack(anchor="w", pady=(2, 8))
+        self._body_box.insert("0.0", self._default_body())
+
+        # Attach PDF checkbox
+        self._attach_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(frm, text="Attach invoice PDF", variable=self._attach_var,
+                        font=ctk.CTkFont(size=11)).pack(anchor="w", pady=(0, 10))
+
+        # Status label
+        self._status_lbl = ctk.CTkLabel(frm, text="", font=ctk.CTkFont(size=11))
+        self._status_lbl.pack(anchor="w")
+
+        # Buttons
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=8)
+        ctk.CTkButton(btn_row, text="Cancel", width=90, fg_color="#555",
+                      hover_color="#444", command=self.destroy).pack(side="right", padx=4)
+        self._send_btn = ctk.CTkButton(btn_row, text="📤 Send Email", width=140,
+                                       fg_color="#6c3483", hover_color="#7d3c98",
+                                       command=self._send)
+        self._send_btn.pack(side="right", padx=4)
+
+    def _default_subject(self):
+        firm_name = self._firm.get("firm_name") or "Us"
+        inv_no    = self._inv.get("invoice_number", "")
+        return f"Invoice {inv_no} from {firm_name}"
+
+    def _default_body(self):
+        firm_name = self._firm.get("firm_name") or "Us"
+        inv       = self._inv
+        due_date  = inv.get("due_date") or ""
+        lines = [
+            f"Dear {inv.get('client_name') or 'Customer'},",
+            "",
+            "Please find attached your invoice details:",
+            f"  Invoice No : {inv.get('invoice_number', '')}",
+            f"  Date       : {inv.get('invoice_date', '')}",
+            f"  Amount Due : ₹{inv.get('grand_total', 0):,.2f}",
+        ]
+        if due_date:
+            lines.append(f"  Due By     : {due_date}")
+        lines += [
+            "",
+            "Kindly arrange payment at your earliest convenience.",
+            "Please feel free to contact us for any queries.",
+            "",
+            "Regards,",
+            firm_name,
+        ]
+        return "\n".join(lines)
+
+    def _send(self):
+        import smtplib, ssl
+        from email.message import EmailMessage
+
+        to_addr = self._to_var.get().strip()
+        if not to_addr:
+            messagebox.showwarning("Validation", "To address is required.", parent=self); return
+
+        fs   = self._fs
+        host = fs.get("smtp_host", "smtp.gmail.com")
+        user = fs.get("smtp_user", "")
+        pwd  = fs.get("smtp_password", "")
+        tls  = bool(fs.get("smtp_tls", 1))
+        from_name = fs.get("smtp_from_name") or fs.get("firm_name") or user
+        try:
+            port = int(fs.get("smtp_port", 587))
+        except (ValueError, TypeError):
+            port = 587
+
+        if not user:
+            messagebox.showerror("SMTP Not Configured",
+                                 "Go to Settings → 📧 Email and configure your SMTP credentials.",
+                                 parent=self); return
+
+        self._send_btn.configure(state="disabled")
+        self._status_lbl.configure(text="Sending…", text_color="#f39c12")
+        self.update_idletasks()
+
+        try:
+            msg = EmailMessage()
+            msg["Subject"] = self._subj_var.get().strip()
+            msg["From"]    = f"{from_name} <{user}>"
+            msg["To"]      = to_addr
+            cc = self._cc_var.get().strip()
+            if cc:
+                msg["CC"] = cc
+            msg.set_content(self._body_box.get("0.0", "end").strip())
+
+            if self._attach_var.get():
+                # Generate PDF
+                from invoice_pdf import generate_invoice_pdf
+                inv, items, firm = db.get_invoice_full(self.invoice_id)
+                generate_invoice_pdf(dict(inv), [dict(i) for i in items],
+                                     dict(firm) if firm else {}, self._pdf_path)
+                with open(self._pdf_path, "rb") as f:
+                    msg.add_attachment(f.read(), maintype="application", subtype="pdf",
+                                       filename=os.path.basename(self._pdf_path))
+
+            if tls:
+                s = smtplib.SMTP(host, port, timeout=15)
+                s.ehlo(); s.starttls(context=ssl.create_default_context()); s.ehlo()
+            else:
+                s = smtplib.SMTP_SSL(host, port, timeout=15,
+                                     context=ssl.create_default_context())
+            s.login(user, pwd)
+            s.send_message(msg)
+            s.quit()
+
+            self._status_lbl.configure(text=f"✓ Sent to {to_addr}", text_color=COLORS["success"])
+            self._send_btn.configure(state="normal")
+            self.after(2000, self.destroy)
+
+        except Exception as e:
+            self._status_lbl.configure(text=f"✗ {e}", text_color=COLORS["danger"])
+            self._send_btn.configure(state="normal")
+
+
 # ── E-Invoice Dialog ───────────────────────────────────────────────────────────
 
 class EInvoiceDialog(ctk.CTkToplevel):
@@ -4864,6 +5059,8 @@ class SettingsPage(BasePage):
         self._build_einvoice_tab(t6, firm)
         t7 = tabs.add("🚚  E-Way Bill")
         self._build_ewb_tab(t7, firm)
+        t8 = tabs.add("📧  Email")
+        self._build_email_tab(t8, firm)
         is_admin = self.app.current_user.get("role") == "admin"
         if is_admin:
             t5 = tabs.add("👥  Users")
@@ -5169,6 +5366,76 @@ class SettingsPage(BasePage):
                          ).pack(anchor="w", padx=16, pady=2)
         ctk.CTkFrame(fi, fg_color="transparent", height=8).pack()
 
+    def _build_email_tab(self, parent, firm):
+        sc = ctk.CTkScrollableFrame(parent, fg_color="transparent")
+        sc.pack(fill="both", expand=True)
+
+        f = self._section(sc, "📧  Outgoing Email (SMTP)")
+        ctk.CTkLabel(
+            f,
+            text=(
+                "  Configure your outgoing mail server to send invoice emails directly.\n"
+                "  Gmail: use smtp.gmail.com port 587 with an App Password\n"
+                "  (Google Account → Security → 2-Step Verification → App passwords)."
+            ),
+            font=ctk.CTkFont(size=10), text_color="#7f8c8d", justify="left",
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+
+        self._smtp_host_var = self._field(f, "SMTP Host", firm.get("smtp_host", "smtp.gmail.com"))
+        self._smtp_port_var = self._field(f, "SMTP Port", str(firm.get("smtp_port", 587)))
+        self._smtp_user_var = self._field(f, "Login / Username (email address)", firm.get("smtp_user", ""))
+        self._smtp_from_name_var = self._field(f, "From Name (shown to recipient)", firm.get("smtp_from_name", ""))
+
+        ctk.CTkLabel(f, text="Password / App Password", text_color="#95a5a6",
+                     font=ctk.CTkFont(size=11)).pack(anchor="w", padx=16, pady=(6, 0))
+        self._smtp_password_var = ctk.StringVar(value=firm.get("smtp_password", ""))
+        ctk.CTkEntry(f, textvariable=self._smtp_password_var, show="•"
+                     ).pack(fill="x", padx=16, pady=(2, 0))
+
+        ctk.CTkLabel(f, text="Encryption", text_color="#95a5a6",
+                     font=ctk.CTkFont(size=11)).pack(anchor="w", padx=16, pady=(10, 0))
+        self._smtp_tls_var = ctk.StringVar(
+            value="STARTTLS (port 587)" if firm.get("smtp_tls", 1) else "SSL/TLS (port 465)"
+        )
+        ctk.CTkComboBox(f, values=["STARTTLS (port 587)", "SSL/TLS (port 465)"],
+                        variable=self._smtp_tls_var).pack(fill="x", padx=16, pady=(2, 0))
+
+        test_row = ctk.CTkFrame(f, fg_color="transparent")
+        test_row.pack(fill="x", padx=16, pady=(14, 4))
+        self._smtp_test_lbl = ctk.CTkLabel(test_row, text="", font=ctk.CTkFont(size=11))
+        self._smtp_test_lbl.pack(side="left")
+        ctk.CTkButton(test_row, text="🔌 Test Connection", width=160,
+                      fg_color="#1a3a5c", hover_color="#2355c2",
+                      command=self._test_smtp).pack(side="right")
+
+        ctk.CTkFrame(f, fg_color="transparent", height=12).pack()
+
+    def _test_smtp(self):
+        import smtplib, ssl
+        host = self._smtp_host_var.get().strip()
+        user = self._smtp_user_var.get().strip()
+        pwd  = self._smtp_password_var.get()
+        tls  = "STARTTLS" in self._smtp_tls_var.get()
+        try:
+            port = int(self._smtp_port_var.get().strip())
+        except ValueError:
+            port = 587 if tls else 465
+        self._smtp_test_lbl.configure(text="Testing…", text_color="#f39c12")
+        self.update_idletasks()
+        try:
+            if tls:
+                s = smtplib.SMTP(host, port, timeout=10)
+                s.ehlo(); s.starttls(context=ssl.create_default_context()); s.ehlo()
+            else:
+                s = smtplib.SMTP_SSL(host, port, timeout=10,
+                                     context=ssl.create_default_context())
+            if user and pwd:
+                s.login(user, pwd)
+            s.quit()
+            self._smtp_test_lbl.configure(text="✓ Connection OK", text_color=COLORS["success"])
+        except Exception as e:
+            self._smtp_test_lbl.configure(text=f"✗ {e}", text_color=COLORS["danger"])
+
     # ── save ──────────────────────────────────────────────────────────────────
 
     def _save(self):
@@ -5222,6 +5489,12 @@ class SettingsPage(BasePage):
             ewb_username      = self._ewb_username_var.get().strip(),
             ewb_password      = self._ewb_password_var.get(),
             ewb_sandbox       = ewb_sandbox_val,
+            smtp_host         = self._smtp_host_var.get().strip(),
+            smtp_port         = int(self._smtp_port_var.get().strip() or 587),
+            smtp_user         = self._smtp_user_var.get().strip(),
+            smtp_password     = self._smtp_password_var.get(),
+            smtp_tls          = 1 if "STARTTLS" in self._smtp_tls_var.get() else 0,
+            smtp_from_name    = self._smtp_from_name_var.get().strip(),
         )
         self._saved_lbl.configure(text=f"Saved  {datetime.now().strftime('%I:%M %p')}")
         self._refresh_preview()
