@@ -103,7 +103,8 @@ def amount_in_words(amount: float) -> str:
 # ── PDF builder ───────────────────────────────────────────────────────────────
 
 def _p(text, style=None):
-    return Paragraph(str(text) if text else "", style or S_NORMAL)
+    from xml.sax.saxutils import escape
+    return Paragraph(escape(str(text)) if text else "", style or S_NORMAL)
 
 
 def _tbl_style(cmds):

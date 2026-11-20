@@ -104,7 +104,14 @@ class App(ctk.CTk):
         self.pages = {}
         self.current_page = None
 
+    _STAFF_PAGES = frozenset({"dashboard", "orders", "stock", "clients",
+                              "invoices", "payments", "alerts"})
+
     def _show_page(self, name):
+        # Role gate — staff cannot navigate to admin-only pages
+        if self.current_user.get("role") != "admin" and name not in self._STAFF_PAGES:
+            return
+
         if self.current_page:
             self.current_page.grid_remove()
 

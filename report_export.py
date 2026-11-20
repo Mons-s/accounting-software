@@ -29,7 +29,24 @@ C_GREY  = colors.HexColor("#95a5a6")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+_FORMULA_CHARS = frozenset("=+-@\t\r")
+
+
+def _safe_cell(val):
+    """Prevent Excel formula injection: prefix dangerous leading chars with a space."""
+    if isinstance(val, str) and val and val[0] in _FORMULA_CHARS:
+        return " " + val
+    return val
+
+
+def _safe_row(row):
+    """Apply _safe_cell to every value in a list before ws.append()."""
+    return [_safe_cell(v) for v in row]
+
+
 def _para(text, size=10, bold=False, color=None, align=TA_CENTER):
+    from xml.sax.saxutils import escape
+    safe = escape(str(text)) if text else ""
     style = ParagraphStyle(
         "p",
         fontName="Helvetica-Bold" if bold else "Helvetica",
@@ -38,7 +55,7 @@ def _para(text, size=10, bold=False, color=None, align=TA_CENTER):
         alignment=align,
         spaceAfter=3,
     )
-    return Paragraph(str(text), style)
+    return Paragraph(safe, style)
 
 def _money(v):
     if v is None:
@@ -1319,13 +1336,13 @@ def export_stock_valuation_excel(data, firm, filepath):
     ws.append(_SV_HDR)
     hdr_row = ws.max_row
     for it in data["items"]:
-        ws.append([
+        ws.append(_safe_row([
             it["sku"], it["name"], it.get("hsn_code") or "",
             it.get("unit") or "pcs", it["stock_quantity"],
             it["cost"], it["unit_price"],
             it["cost_value"], it["sale_value"],
             it["margin_pct"],
-        ])
+        ]))
     tr = ws.max_row + 1
     ws.cell(row=tr, column=1, value="TOTAL")
     ws.cell(row=tr, column=8, value=data["total_cost_value"])
@@ -1563,9 +1580,9 @@ def export_payments_excel(payments, firm, filepath):
         cell.fill = hdr_fill
         cell.font = hdr_font
     for p in payments:
-        ws.append([p.get("payment_date", ""), p.get("invoice_number", ""),
-                   p.get("client_name", ""), p["amount"],
-                   p.get("payment_mode", ""), _pmt_ref(p)])
+        ws.append(_safe_row([p.get("payment_date", ""), p.get("invoice_number", ""),
+                             p.get("client_name", ""), p["amount"],
+                             p.get("payment_mode", ""), _pmt_ref(p)]))
     total_row = ws.max_row + 1
     ws.append(["TOTAL", "", "", sum(p["amount"] for p in payments), "", ""])
     for cell in ws[total_row]:
@@ -1638,7 +1655,7 @@ def export_purchases_excel(purchases, firm, filepath):
 
     for p in purchases:
         gst_p = p.get("cgst_total", 0) + p.get("sgst_total", 0) + p.get("igst_total", 0)
-        ws.append([
+        ws.append(_safe_row([
             p.get("bill_date", ""),
             p.get("bill_number", "") or "—",
             p.get("vendor_name", "") or "—",
@@ -1646,7 +1663,7 @@ def export_purchases_excel(purchases, firm, filepath):
             round(gst_p, 2),
             round(p.get("grand_total", 0), 2),
             p.get("status", ""),
-        ])
+        ]))
 
     grand = sum(p.get("grand_total", 0) for p in purchases)
     ws.append(["TOTAL", "", "", "", "", round(grand, 2), ""])
