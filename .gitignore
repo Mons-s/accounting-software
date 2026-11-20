@@ -1,0 +1,32 @@
+# Database
+accounting.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Generated files
+Invoices/
+Backups/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Python installer / large binaries
+*.exe
+*.msi
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Logs
+*.log
