@@ -3,13 +3,20 @@ import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 
+import hmac
+
 import psycopg2
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "change-me")
+ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL env var must be set")
+if not ADMIN_API_KEY or len(ADMIN_API_KEY) < 32:
+    raise RuntimeError("ADMIN_API_KEY must be set to a random string of at least 32 characters")
 
 
 def get_db():
@@ -19,8 +26,8 @@ def get_db():
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        key = request.headers.get("X-Admin-Key")
-        if key != ADMIN_API_KEY:
+        key = request.headers.get("X-Admin-Key", "")
+        if not hmac.compare_digest(key, ADMIN_API_KEY):
             return jsonify({"error": "Unauthorized"}), 401
         return f(*args, **kwargs)
     return decorated
