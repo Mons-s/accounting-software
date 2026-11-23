@@ -829,6 +829,25 @@ def get_all_clients():
         return conn.execute("SELECT * FROM clients ORDER BY name").fetchall()
 
 
+def get_or_create_walkin_client() -> int:
+    """Return the id of the 'Walk-in Customer' client, creating it if needed."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM clients WHERE name = 'Walk-in Customer' LIMIT 1"
+        ).fetchone()
+        if row:
+            return row["id"] if isinstance(row, dict) else row[0]
+        conn.execute(
+            "INSERT INTO clients (name, email, phone, address) VALUES (?,?,?,?)",
+            ("Walk-in Customer", "", "", ""),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT id FROM clients WHERE name = 'Walk-in Customer' LIMIT 1"
+        ).fetchone()
+        return row["id"] if isinstance(row, dict) else row[0]
+
+
 def add_client(name, email="", phone="", address="", gstin="", state="", credit_limit=0.0):
     with get_connection() as conn:
         conn.execute(

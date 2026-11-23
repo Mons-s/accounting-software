@@ -381,7 +381,10 @@ class LoginWindow(ctk.CTk):
         user = db.authenticate_user(username, password)
         if user:
             self.destroy()
-            app = App(user)
+            if user.get("role") == "cashier":
+                app = CashierApp(user)
+            else:
+                app = App(user)
             app.mainloop()
         else:
             self._err_label.configure(text="Invalid username or password.")
@@ -494,7 +497,7 @@ class AddEditUserDialog(ctk.CTkToplevel):
             row=5, column=0, sticky="w", padx=24, pady=(6, 0))
         self._role_var = ctk.StringVar(value="staff")
         ctk.CTkSegmentedButton(
-            self, values=["admin", "staff"],
+            self, values=["admin", "staff", "cashier"],
             variable=self._role_var,
             font=ctk.CTkFont(size=13),
         ).grid(row=6, column=0, padx=24, pady=(2, 0), sticky="ew")
@@ -14180,6 +14183,283 @@ class ChequeDialog(ctk.CTkToplevel):
         if self.on_save:
             self.on_save()
         self.destroy()
+
+
+# ── Cashier POS ───────────────────────────────────────────────────────────────
+
+class CashierApp(ctk.CTk):
+    """Full-screen fast-billing POS for cashier role."""
+
+    _BARCODE_GAP_MS = 80  # max ms between scanner keystrokes
+
+    def __init__(self, user: dict):
+        super().__init__()
+        self.current_user = user
+        self.title(f"POS — {user.get('full_name') or user.get('username', 'Cashier')}")
+        self.geometry("900x650")
+        self.minsize(760, 540)
+        self._cart: list[dict] = []          # {product, qty}
+        self._all_products: list[dict] = []
+        self._barcode_buf = ""
+        self._barcode_ts  = 0.0
+        self._build()
+        self._load_products()
+
+    # ── build UI ──────────────────────────────────────────────────────────────
+
+    def _build(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # ── header ──
+        hdr = ctk.CTkFrame(self, fg_color="#0d1424", corner_radius=0, height=52)
+        hdr.grid(row=0, column=0, sticky="ew")
+        hdr.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(hdr, text="🧾  POS Billing",
+                     font=ctk.CTkFont(size=18, weight="bold"),
+                     text_color="#2dd4bf").grid(row=0, column=0, padx=18, pady=10)
+        ctk.CTkLabel(hdr,
+                     text=f"Cashier: {self.current_user.get('full_name') or self.current_user.get('username','')}",
+                     text_color="#94a3b8", font=ctk.CTkFont(size=12)).grid(
+                         row=0, column=1, sticky="w", padx=8)
+        ctk.CTkButton(hdr, text="✕  Exit", width=90, height=30,
+                      fg_color="#7f1f1f", hover_color="#c0392b",
+                      font=ctk.CTkFont(size=12),
+                      command=self.destroy).grid(row=0, column=2, padx=14, pady=10)
+
+        # ── body: left=search/results, right=cart ──
+        body = ctk.CTkFrame(self, fg_color="#0a0f1e", corner_radius=0)
+        body.grid(row=1, column=0, sticky="nsew")
+        body.grid_columnconfigure(0, weight=3)
+        body.grid_columnconfigure(1, weight=2)
+        body.grid_rowconfigure(0, weight=1)
+
+        # ── left panel ──
+        left = ctk.CTkFrame(body, fg_color="#0d1424", corner_radius=10)
+        left.grid(row=0, column=0, padx=(14, 7), pady=14, sticky="nsew")
+        left.grid_rowconfigure(1, weight=1)
+        left.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(left, text="Search product / scan barcode",
+                     font=ctk.CTkFont(size=12), text_color="#94a3b8"
+                     ).grid(row=0, column=0, sticky="w", padx=14, pady=(12, 0))
+
+        self._search_var = ctk.StringVar()
+        self._search_var.trace_add("write", lambda *_: self._refresh_results())
+        search_entry = ctk.CTkEntry(
+            left, textvariable=self._search_var,
+            placeholder_text="🔍  Type name or scan barcode…",
+            height=38, font=ctk.CTkFont(size=13),
+        )
+        search_entry.grid(row=1, column=0, padx=14, pady=(4, 8), sticky="ew")
+        search_entry.focus()
+
+        # Barcode scanner: bind key events on the whole window
+        self.bind("<Key>", self._on_key)
+
+        self._results_frame = ctk.CTkScrollableFrame(
+            left, fg_color="transparent", corner_radius=0)
+        self._results_frame.grid(row=2, column=0, sticky="nsew", padx=4, pady=(0, 8))
+        self._results_frame.grid_columnconfigure(0, weight=1)
+        left.grid_rowconfigure(2, weight=1)
+
+        # ── right panel: cart ──
+        right = ctk.CTkFrame(body, fg_color="#0d1424", corner_radius=10)
+        right.grid(row=0, column=1, padx=(7, 14), pady=14, sticky="nsew")
+        right.grid_rowconfigure(1, weight=1)
+        right.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(right, text="🛒  Cart",
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     text_color="#2dd4bf").grid(
+                         row=0, column=0, sticky="w", padx=14, pady=(12, 4))
+
+        self._cart_frame = ctk.CTkScrollableFrame(
+            right, fg_color="transparent", corner_radius=0)
+        self._cart_frame.grid(row=1, column=0, sticky="nsew", padx=4)
+        self._cart_frame.grid_columnconfigure(0, weight=1)
+
+        # totals + actions
+        foot = ctk.CTkFrame(right, fg_color="transparent")
+        foot.grid(row=2, column=0, sticky="ew", padx=14, pady=10)
+        foot.grid_columnconfigure(0, weight=1)
+
+        self._total_lbl = ctk.CTkLabel(
+            foot, text="TOTAL  ₹ 0.00",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#2ecc71")
+        self._total_lbl.grid(row=0, column=0, sticky="w", pady=(0, 8))
+
+        btn_row = ctk.CTkFrame(foot, fg_color="transparent")
+        btn_row.grid(row=1, column=0, sticky="ew")
+        ctk.CTkButton(btn_row, text="🗑  Clear", width=100, height=36,
+                      fg_color="#1a2235", hover_color="#2a3245",
+                      command=self._clear_cart).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(btn_row, text="💾  Save Bill", height=36,
+                      fg_color="#0d9488", hover_color="#0a7a70",
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      command=self._save_bill).pack(side="left", fill="x", expand=True)
+
+    # ── product loading & search ───────────────────────────────────────────────
+
+    def _load_products(self):
+        self._all_products = [dict(p) for p in db.get_all_products()]
+        self._refresh_results()
+
+    def _refresh_results(self):
+        for w in self._results_frame.winfo_children():
+            w.destroy()
+        q = self._search_var.get().strip().lower()
+        matches = [p for p in self._all_products
+                   if q in p["name"].lower() or q in (p.get("sku") or "").lower()] if q else self._all_products[:40]
+        if not matches:
+            ctk.CTkLabel(self._results_frame, text="No products found.",
+                         text_color="#555").pack(pady=12)
+            return
+        for p in matches[:60]:
+            self._product_row(p)
+
+    def _product_row(self, p: dict):
+        row = ctk.CTkFrame(self._results_frame, fg_color="#16213e", corner_radius=6)
+        row.pack(fill="x", pady=2, padx=2)
+        row.grid_columnconfigure(0, weight=1)
+        stock_color = "#e74c3c" if p.get("stock_quantity", 0) <= 0 else "#94a3b8"
+        ctk.CTkLabel(row, text=p["name"], anchor="w",
+                     font=ctk.CTkFont(size=12),
+                     text_color="#ecf0f1").grid(row=0, column=0, sticky="w", padx=10, pady=(6, 0))
+        ctk.CTkLabel(row,
+                     text=f"₹{p['unit_price']:,.2f}  |  Stock: {p.get('stock_quantity', 0):g} {p.get('unit','pcs')}",
+                     anchor="w", font=ctk.CTkFont(size=10), text_color=stock_color,
+                     ).grid(row=1, column=0, sticky="w", padx=10, pady=(0, 6))
+        ctk.CTkButton(row, text="+ Add", width=60, height=28,
+                      fg_color="#0d9488", hover_color="#0a7a70",
+                      font=ctk.CTkFont(size=11),
+                      command=lambda prod=p: self._add_to_cart(prod)
+                      ).grid(row=0, column=1, rowspan=2, padx=8, pady=4)
+
+    # ── barcode scanner ────────────────────────────────────────────────────────
+
+    def _on_key(self, event):
+        import time
+        now = time.time() * 1000
+        if now - self._barcode_ts < self._BARCODE_GAP_MS:
+            if event.char and event.char.isprintable():
+                self._barcode_buf += event.char
+        else:
+            self._barcode_buf = event.char if (event.char and event.char.isprintable()) else ""
+        self._barcode_ts = now
+
+        if event.keysym == "Return" and len(self._barcode_buf) >= 3:
+            code = self._barcode_buf.strip()
+            self._barcode_buf = ""
+            matches = [p for p in self._all_products
+                       if (p.get("sku") or "").lower() == code.lower()
+                       or p["name"].lower() == code.lower()]
+            if matches:
+                self._add_to_cart(matches[0])
+                self._search_var.set("")
+            else:
+                self._search_var.set(code)
+
+    # ── cart management ────────────────────────────────────────────────────────
+
+    def _add_to_cart(self, product: dict):
+        for entry in self._cart:
+            if entry["product"]["id"] == product["id"]:
+                entry["qty"] += 1
+                self._refresh_cart()
+                return
+        self._cart.append({"product": product, "qty": 1})
+        self._refresh_cart()
+        self._search_var.set("")
+
+    def _refresh_cart(self):
+        for w in self._cart_frame.winfo_children():
+            w.destroy()
+        if not self._cart:
+            ctk.CTkLabel(self._cart_frame, text="Cart is empty.",
+                         text_color="#555").pack(pady=20)
+            self._total_lbl.configure(text="TOTAL  ₹ 0.00")
+            return
+        grand = 0.0
+        for idx, entry in enumerate(self._cart):
+            p   = entry["product"]
+            qty = entry["qty"]
+            line_total = round(qty * p["unit_price"], 2)
+            grand += line_total
+            row = ctk.CTkFrame(self._cart_frame, fg_color="#16213e", corner_radius=6)
+            row.pack(fill="x", pady=2, padx=2)
+            row.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(row, text=p["name"], anchor="w",
+                         font=ctk.CTkFont(size=11),
+                         text_color="#ecf0f1").grid(row=0, column=0, sticky="w", padx=8, pady=(4, 0))
+            # qty controls
+            ctrl = ctk.CTkFrame(row, fg_color="transparent")
+            ctrl.grid(row=1, column=0, sticky="w", padx=6, pady=(0, 4))
+            ctk.CTkButton(ctrl, text="−", width=26, height=24,
+                          fg_color="#1a2235", hover_color="#2a3245",
+                          command=lambda i=idx: self._change_qty(i, -1)).pack(side="left")
+            ctk.CTkLabel(ctrl, text=f"{qty:g}", width=32,
+                         font=ctk.CTkFont(size=12),
+                         text_color="#ecf0f1").pack(side="left")
+            ctk.CTkButton(ctrl, text="+", width=26, height=24,
+                          fg_color="#1a2235", hover_color="#2a3245",
+                          command=lambda i=idx: self._change_qty(i, 1)).pack(side="left")
+            ctk.CTkLabel(ctrl, text=f"× ₹{p['unit_price']:,.2f} = ₹{line_total:,.2f}",
+                         font=ctk.CTkFont(size=10), text_color="#94a3b8").pack(side="left", padx=(8, 0))
+            ctk.CTkButton(row, text="✕", width=28, height=24,
+                          fg_color="#7f1f1f", hover_color="#c0392b",
+                          font=ctk.CTkFont(size=10),
+                          command=lambda i=idx: self._remove_item(i)
+                          ).grid(row=0, column=1, rowspan=2, padx=6, pady=4)
+        self._total_lbl.configure(text=f"TOTAL  ₹ {grand:,.2f}")
+
+    def _change_qty(self, idx: int, delta: int):
+        self._cart[idx]["qty"] = max(1, self._cart[idx]["qty"] + delta)
+        self._refresh_cart()
+
+    def _remove_item(self, idx: int):
+        self._cart.pop(idx)
+        self._refresh_cart()
+
+    def _clear_cart(self):
+        self._cart.clear()
+        self._refresh_cart()
+
+    # ── save bill ──────────────────────────────────────────────────────────────
+
+    def _save_bill(self):
+        if not self._cart:
+            messagebox.showwarning("Empty Cart", "Add items before saving.", parent=self)
+            return
+        try:
+            client_id  = db.get_or_create_walkin_client()
+            inv_number = db.generate_invoice_number()
+            today      = datetime.now().strftime("%Y-%m-%d")
+            items = [{
+                "description": e["product"]["name"],
+                "hsn_code":    e["product"].get("hsn_code", ""),
+                "quantity":    e["qty"],
+                "unit":        e["product"].get("unit", "pcs"),
+                "unit_price":  e["product"]["unit_price"],
+                "gst_rate":    e["product"].get("gst_rate", 18),
+                "product_id":  e["product"]["id"],
+            } for e in self._cart]
+            db.create_invoice(
+                invoice_number=inv_number,
+                client_id=client_id,
+                invoice_date=today,
+                due_date=today,
+                supply_type="intra",
+                items=items,
+                status="Paid",
+            )
+            # Reload stock counts
+            self._load_products()
+            self._clear_cart()
+            messagebox.showinfo("Bill Saved", f"Bill {inv_number} saved successfully.", parent=self)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
