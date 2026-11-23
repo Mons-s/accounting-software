@@ -760,14 +760,30 @@ def _verify_password(password: str, stored: str) -> bool:
 
 
 def _seed_default_admin():
+    """Create the first admin account only when the users table is completely empty.
+
+    Checks row count (not a specific username) so renaming or deleting the
+    account never causes a fixed-password account to silently reappear.
+    Prints the one-time password to stdout so the operator can log in and
+    change it immediately.
+    """
+    import secrets, string
     with get_connection() as conn:
-        exists = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()
-        if not exists:
-            conn.execute(
-                "INSERT INTO users (username, full_name, password_hash, role) VALUES (?,?,?,?)",
-                ("admin", "Administrator", _hash_password("admin123"), "admin"),
-            )
-            conn.commit()
+        count = conn.execute("SELECT COUNT(*) FROM users").fetchone()
+        if count and int(count[0]) > 0:
+            return  # at least one account already exists
+        otp = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
+        conn.execute(
+            "INSERT INTO users (username, full_name, password_hash, role) VALUES (?,?,?,?)",
+            ("admin", "Administrator", _hash_password(otp), "admin"),
+        )
+        conn.commit()
+    print("=" * 60)
+    print("FIRST-RUN SETUP: Admin account created.")
+    print(f"  Username : admin")
+    print(f"  Password : {otp}")
+    print("Change this password immediately after first login.")
+    print("=" * 60)
 
 
 def authenticate_user(username: str, password: str):
