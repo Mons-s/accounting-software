@@ -5,6 +5,8 @@ import json
 import hashlib
 from datetime import datetime, timedelta
 
+import db_connection
+
 # When frozen by PyInstaller, store the DB next to the .exe, not in the temp bundle.
 if getattr(sys, "frozen", False):
     _app_dir = os.path.dirname(sys.executable)
@@ -34,14 +36,16 @@ def save_config(cfg):
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    return db_connection.get_connection()
 
 
 def initialize_db():
     conn = get_connection()
+    # PostgreSQL: schema already lives in Supabase — skip SQLite DDL
+    if getattr(conn, "is_pg", False):
+        _seed_pg(conn)
+        conn.close()
+        return
     cur = conn.cursor()
     cur.executescript("""
         CREATE TABLE IF NOT EXISTS clients (
@@ -233,9 +237,23 @@ def initialize_db():
     _migrate_db()
 
 
+def _seed_pg(conn):
+    """Ensure the singleton firm_settings row exists in PostgreSQL."""
+    try:
+        if not conn.execute("SELECT id FROM firm_settings WHERE id = 1").fetchone():
+            conn.execute("INSERT INTO firm_settings (id) VALUES (1)")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+
 def _migrate_db():
     """Add any missing columns to existing tables without data loss."""
     with get_connection() as conn:
+        # PostgreSQL: schema is managed in Supabase; run seed only
+        if getattr(conn, "is_pg", False):
+            _seed_pg(conn)
+            return
         existing = {col[1] for col in conn.execute("PRAGMA table_info(clients)").fetchall()}
         for col, ddl in [("gstin", "TEXT DEFAULT ''"), ("state", "TEXT DEFAULT ''"),
                          ("credit_limit", "REAL DEFAULT 0")]:
