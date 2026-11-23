@@ -45,6 +45,8 @@ def initialize_db():
     if getattr(conn, "is_pg", False):
         _seed_pg(conn)
         conn.close()
+        _seed_ledger_accounts()
+        _seed_default_admin()
         return
     cur = conn.cursor()
     cur.executescript("""
@@ -260,6 +262,7 @@ def _migrate_db():
         # PostgreSQL: schema is managed in Supabase; run seed only
         if getattr(conn, "is_pg", False):
             _seed_pg(conn)
+            conn.commit()
             return
         existing = {col[1] for col in conn.execute("PRAGMA table_info(clients)").fetchall()}
         for col, ddl in [("gstin", "TEXT DEFAULT ''"), ("state", "TEXT DEFAULT ''"),

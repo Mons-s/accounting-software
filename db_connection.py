@@ -53,12 +53,27 @@ def is_cloud() -> bool:
 # PostgreSQL cursor wrapper
 # ---------------------------------------------------------------------------
 
+class _Row(dict):
+    """Dict subclass that also supports integer index access like sqlite3.Row."""
+    def __init__(self, mapping):
+        super().__init__(mapping)
+        self._keys = list(mapping.keys())
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return super().__getitem__(self._keys[key])
+        return super().__getitem__(key)
+
+    def keys(self):
+        return self._keys
+
+
 class _PgCursor:
     """
     Wraps a psycopg2 RealDictCursor so it behaves like sqlite3.Cursor:
     - Accepts '?' placeholders (converts to '%s' for PostgreSQL)
     - Provides .lastrowid via RETURNING id on INSERT
-    - fetchone() / fetchall() return dict-like rows
+    - fetchone() / fetchall() return _Row objects (support key + index access)
     """
 
     def __init__(self, cur):
@@ -67,6 +82,14 @@ class _PgCursor:
 
     def execute(self, query: str, params=()):
         query = query.replace("?", "%s")
+        import re as _re
+        # SQLite uses MAX(a,b) as scalar; PostgreSQL needs GREATEST(a,b)
+        query = _re.sub(r'\bMAX\s*\((\s*0\s*,)', r'GREATEST(\1', query, flags=_re.IGNORECASE)
+        # SQLite INSERT OR IGNORE → PostgreSQL INSERT ... ON CONFLICT DO NOTHING
+        _before = query
+        query = _re.sub(r'\bINSERT\s+OR\s+IGNORE\s+INTO\b', 'INSERT INTO', query, flags=_re.IGNORECASE)
+        if query != _before:
+            query = query.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
         # Auto-append RETURNING id to bare INSERTs so .lastrowid works
         stripped = query.lstrip().upper()
         if stripped.startswith("INSERT") and "RETURNING" not in stripped:
@@ -85,11 +108,11 @@ class _PgCursor:
 
     def fetchone(self):
         row = self._cur.fetchone()
-        return dict(row) if row else None
+        return _Row(row) if row else None
 
     def fetchall(self):
         rows = self._cur.fetchall() or []
-        return [dict(r) for r in rows]
+        return [_Row(r) for r in rows]
 
     @property
     def lastrowid(self) -> Optional[int]:
@@ -108,7 +131,7 @@ class _PgCursor:
 
     def __iter__(self):
         for row in self._cur:
-            yield dict(row)
+            yield _Row(row)
 
 
 # ---------------------------------------------------------------------------
