@@ -97,8 +97,8 @@ CREATE INDEX IF NOT EXISTS idx_stock_alerts_shop ON accounting.stock_alerts(shop
 -- Firm / shop settings (singleton per shop)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS accounting.firm_settings (
-    id                BIGINT      PRIMARY KEY DEFAULT 1,
-    shop_id           UUID        REFERENCES accounting.shops(id),
+    row_id            BIGSERIAL   PRIMARY KEY,
+    shop_id           UUID        NOT NULL UNIQUE REFERENCES accounting.shops(id),
     firm_name         TEXT        DEFAULT '',
     address           TEXT        DEFAULT '',
     city              TEXT        DEFAULT '',

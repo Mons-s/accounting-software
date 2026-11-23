@@ -238,10 +238,17 @@ def initialize_db():
 
 
 def _seed_pg(conn):
-    """Ensure the singleton firm_settings row exists in PostgreSQL."""
+    """Ensure a firm_settings row exists for this shop in PostgreSQL."""
     try:
-        if not conn.execute("SELECT id FROM firm_settings WHERE id = 1").fetchone():
-            conn.execute("INSERT INTO firm_settings (id) VALUES (1)")
+        shop_id = db_connection._shop_id
+        if not shop_id:
+            return
+        if not conn.execute(
+            "SELECT row_id FROM firm_settings WHERE shop_id = ?", (shop_id,)
+        ).fetchone():
+            conn.execute(
+                "INSERT INTO firm_settings (shop_id) VALUES (?)", (shop_id,)
+            )
         conn.commit()
     except Exception:
         conn.rollback()
