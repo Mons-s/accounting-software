@@ -27,7 +27,11 @@ def load() -> dict:
     pg_url  = cfg.get(_K_PG_URL, "").strip()
     shop_id = cfg.get(_K_SHOP_ID, "").strip()
 
-    if pg_url and shop_id:
+    if pg_url:
+        if not shop_id:
+            shop_id = str(uuid.uuid4())
+            cfg[_K_SHOP_ID] = shop_id
+            save_config(cfg)
         db_connection.configure(pg_url, shop_id)
 
     return cfg

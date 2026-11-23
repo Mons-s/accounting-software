@@ -694,6 +694,11 @@ def _migrate_db():
                 )
             """)
 
+        # product_id on invoice_items (links sale to stock)
+        ii_cols = {col[1] for col in conn.execute("PRAGMA table_info(invoice_items)").fetchall()}
+        if "product_id" not in ii_cols:
+            conn.execute("ALTER TABLE invoice_items ADD COLUMN product_id INTEGER DEFAULT NULL")
+
         conn.commit()
 
     _seed_ledger_accounts()
@@ -1463,16 +1468,26 @@ def create_invoice(invoice_number, client_id, invoice_date, due_date,
                 """INSERT INTO invoice_items
                    (invoice_id,description,hsn_code,quantity,unit,unit_price,gst_rate,
                     taxable_value,cgst_rate,cgst_amt,sgst_rate,sgst_amt,
-                    igst_rate,igst_amt,total_amt)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    igst_rate,igst_amt,total_amt,product_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (inv_id, it["description"], it.get("hsn_code", ""),
                  it["quantity"], it.get("unit", "pcs"), it["unit_price"],
                  it["gst_rate"], it["taxable_value"],
                  it["cgst_rate"], it["cgst_amt"],
                  it["sgst_rate"], it["sgst_amt"],
-                 it["igst_rate"], it["igst_amt"], it["total_amt"]),
+                 it["igst_rate"], it["igst_amt"], it["total_amt"],
+                 it.get("product_id")),
             )
+        # Deduct stock for items linked to a product
+        for it in computed:
+            pid = it.get("product_id")
+            if pid:
+                conn.execute(
+                    "UPDATE products SET stock_quantity = MAX(0, stock_quantity - ?) WHERE id=?",
+                    (it["quantity"], pid),
+                )
         conn.commit()
+    check_and_create_alerts()
     post_invoice_journal(inv_id)
     return inv_id
 

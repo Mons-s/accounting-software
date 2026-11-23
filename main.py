@@ -4790,6 +4790,7 @@ class InvoiceDialog(ctk.CTkToplevel):
             "unit":        p["unit"] if p else "pcs",
             "unit_price":  rate,
             "gst_rate":    gst_rate,
+            "product_id":  p["id"] if p else None,
         })
         self._refresh_items_display()
         self._draw_totals()
@@ -14184,5 +14185,7 @@ class ChequeDialog(ctk.CTkToplevel):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import app_config
+    app_config.load()
     login = LoginWindow()
     login.mainloop()
