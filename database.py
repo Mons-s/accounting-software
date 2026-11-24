@@ -720,6 +720,32 @@ def _migrate_db():
                 )
             """)
 
+        # shift_id on invoices (Phase 6 — shift management)
+        _inv2 = {col[1] for col in conn.execute("PRAGMA table_info(invoices)").fetchall()}
+        if "shift_id" not in _inv2:
+            conn.execute("ALTER TABLE invoices ADD COLUMN shift_id INTEGER DEFAULT NULL")
+
+        # shifts table (Phase 6)
+        if "shifts" not in tables:
+            conn.execute("""
+                CREATE TABLE shifts (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id       INTEGER NOT NULL DEFAULT 0,
+                    username      TEXT    NOT NULL DEFAULT '',
+                    full_name     TEXT    NOT NULL DEFAULT '',
+                    opened_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+                    closed_at     TEXT    DEFAULT NULL,
+                    opening_cash  REAL    NOT NULL DEFAULT 0,
+                    closing_cash  REAL    DEFAULT NULL,
+                    expected_cash REAL    DEFAULT NULL,
+                    discrepancy   REAL    DEFAULT NULL,
+                    sales_count   INTEGER DEFAULT 0,
+                    sales_total   REAL    DEFAULT 0,
+                    notes         TEXT    DEFAULT '',
+                    status        TEXT    NOT NULL DEFAULT 'Open'
+                )
+            """)
+
         conn.commit()
 
     _seed_ledger_accounts()
@@ -1463,7 +1489,8 @@ def get_invoice_by_number(invoice_number: str):
 
 
 def create_invoice(invoice_number, client_id, invoice_date, due_date,
-                   supply_type, items, notes="", status="Draft", discount_pct=0.0):
+                   supply_type, items, notes="", status="Draft", discount_pct=0.0,
+                   shift_id=None):
     """
     items: list of dicts with keys:
       description, hsn_code, quantity, unit, unit_price, gst_rate
@@ -1511,12 +1538,12 @@ def create_invoice(invoice_number, client_id, invoice_date, due_date,
             """INSERT INTO invoices
                (invoice_number,client_id,invoice_date,due_date,supply_type,
                 subtotal,cgst_total,sgst_total,igst_total,grand_total,
-                discount_pct,discount_amt,status,notes)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                discount_pct,discount_amt,status,notes,shift_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (invoice_number, client_id, invoice_date, due_date, supply_type,
              round(subtotal, 2), round(cgst_total, 2), round(sgst_total, 2),
              round(igst_total, 2), grand_total,
-             round(discount_pct, 4), discount_amt, status, notes),
+             round(discount_pct, 4), discount_amt, status, notes, shift_id),
         )
         inv_id = cur.lastrowid
         for it in computed:
@@ -4417,3 +4444,99 @@ def sync_offline_queue() -> int:
 
     qconn.close()
     return synced
+
+
+# ---------------------------------------------------------------------------
+# Shift management (Phase 6)
+# ---------------------------------------------------------------------------
+
+def open_shift(user_id: int, username: str, full_name: str, opening_cash: float) -> int:
+    from datetime import datetime as _dt
+    opened_at = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO shifts (user_id, username, full_name, opening_cash, opened_at, status)
+               VALUES (?,?,?,?,?,'Open')""",
+            (user_id, username, full_name, round(opening_cash, 2), opened_at),
+        )
+        shift_id = cur.lastrowid
+        conn.commit()
+    return shift_id
+
+
+def get_open_shift(user_id: int):
+    """Return the most recent Open shift for this user, or None."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM shifts WHERE user_id=? AND status='Open' ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_shift_sales(shift_id: int) -> dict:
+    """Count and total paid invoices linked to this shift."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(grand_total),0) as total "
+            "FROM invoices WHERE shift_id=? AND status='Paid'",
+            (shift_id,),
+        ).fetchone()
+    return {
+        "count": int(row["cnt"] or 0) if row else 0,
+        "total": round(float(row["total"] or 0), 2) if row else 0.0,
+    }
+
+
+def close_shift(shift_id: int, closing_cash: float, notes: str = "") -> dict:
+    from datetime import datetime as _dt
+    closed_at = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        shift = conn.execute("SELECT * FROM shifts WHERE id=?", (shift_id,)).fetchone()
+        if not shift:
+            raise ValueError(f"Shift {shift_id} not found")
+        sales = conn.execute(
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(grand_total),0) as total "
+            "FROM invoices WHERE shift_id=? AND status='Paid'",
+            (shift_id,),
+        ).fetchone()
+        sales_count  = int(sales["cnt"] or 0)
+        sales_total  = round(float(sales["total"] or 0), 2)
+        opening_cash = round(float(shift["opening_cash"] or 0), 2)
+        expected     = round(opening_cash + sales_total, 2)
+        discrepancy  = round(closing_cash - expected, 2)
+        conn.execute(
+            """UPDATE shifts SET closed_at=?, closing_cash=?, expected_cash=?,
+               discrepancy=?, sales_count=?, sales_total=?, notes=?, status='Closed'
+               WHERE id=?""",
+            (closed_at, round(closing_cash, 2), expected,
+             discrepancy, sales_count, sales_total, notes, shift_id),
+        )
+        conn.commit()
+    return {
+        "sales_count":  sales_count,
+        "sales_total":  sales_total,
+        "opening_cash": opening_cash,
+        "expected_cash": expected,
+        "closing_cash": round(closing_cash, 2),
+        "discrepancy":  discrepancy,
+    }
+
+
+def get_all_shifts(from_date: str = None, to_date: str = None,
+                   user_id: int = None) -> list:
+    q = "SELECT * FROM shifts WHERE 1=1"
+    params: list = []
+    if from_date:
+        q += " AND date(opened_at) >= ?"
+        params.append(from_date)
+    if to_date:
+        q += " AND date(opened_at) <= ?"
+        params.append(to_date)
+    if user_id is not None:
+        q += " AND user_id = ?"
+        params.append(user_id)
+    q += " ORDER BY id DESC"
+    with get_connection() as conn:
+        rows = conn.execute(q, params).fetchall()
+    return [dict(r) for r in rows]

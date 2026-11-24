@@ -164,6 +164,7 @@ class App(ctk.CTk):
                 "gst_reports": GSTReportsPage,
                 "bank_recon": BankReconciliationPage,
                 "day_book":  DayBookPage,
+                "shifts":    ShiftsPage,
                 "settings": SettingsPage,
             }
             self.pages[name] = page_map[name](self.content_frame, self)
@@ -596,6 +597,7 @@ class Sidebar(ctk.CTkFrame):
         ("gst_reports",    "◧  GST Reports"),
         ("bank_recon",     "▦  Bank Recon"),
         ("day_book",       "≡  Day Book"),
+        ("shifts",         "⇌  Shift Management"),
         ("settings",       "⚙  Settings"),
     ]
 
@@ -607,7 +609,7 @@ class Sidebar(ctk.CTkFrame):
         ("REPORTS", ["reports", "sales_summary", "balance_sheet", "trial_balance",
                      "cash_flow", "client_ledger", "aging", "gst_reports",
                      "bank_recon", "day_book"]),
-        ("OTHER",   ["reminders", "alerts", "settings"]),
+        ("OTHER",   ["reminders", "alerts", "shifts", "settings"]),
     ]
 
     def __init__(self, parent, on_navigate):
@@ -14394,6 +14396,344 @@ class ChequeDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+# ── Shift Management page ────────────────────────────────────────────────────
+
+class ShiftsPage(ctk.CTkFrame):
+    def __init__(self, parent, app):
+        super().__init__(parent, fg_color=COLORS["bg"], corner_radius=0)
+        self.app = app
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        self._build()
+
+    def _build(self):
+        hdr = ctk.CTkFrame(self, fg_color=COLORS["card_bg"], corner_radius=0)
+        hdr.grid(row=0, column=0, sticky="ew")
+        hdr.grid_columnconfigure(2, weight=1)
+        ctk.CTkLabel(hdr, text="Shift Management",
+                     font=ctk.CTkFont(size=20, weight="bold"),
+                     text_color=COLORS["text"]).grid(row=0, column=0, padx=18, pady=14, sticky="w")
+        ctk.CTkLabel(hdr, text="From:", text_color=COLORS["text_dim"],
+                     font=ctk.CTkFont(size=12)).grid(row=0, column=3, padx=(14, 4), pady=14)
+        self._from_var = ctk.StringVar()
+        ctk.CTkEntry(hdr, textvariable=self._from_var, width=110,
+                     placeholder_text="YYYY-MM-DD").grid(row=0, column=4, padx=4, pady=14)
+        ctk.CTkLabel(hdr, text="To:", text_color=COLORS["text_dim"],
+                     font=ctk.CTkFont(size=12)).grid(row=0, column=5, padx=4, pady=14)
+        self._to_var = ctk.StringVar()
+        ctk.CTkEntry(hdr, textvariable=self._to_var, width=110,
+                     placeholder_text="YYYY-MM-DD").grid(row=0, column=6, padx=4, pady=14)
+        ctk.CTkButton(hdr, text="Filter", width=70,
+                      fg_color=COLORS["accent"], hover_color=COLORS["accent_light"],
+                      command=self.refresh).grid(row=0, column=7, padx=(4, 18), pady=14)
+
+        tbl_frame = ctk.CTkFrame(self, fg_color=COLORS["card_bg"], corner_radius=10)
+        tbl_frame.grid(row=1, column=0, sticky="nsew", padx=16, pady=16)
+        tbl_frame.grid_columnconfigure(0, weight=1)
+        tbl_frame.grid_rowconfigure(0, weight=1)
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Shifts.Treeview",
+                        background="#0d1424", foreground="#ecf0f1",
+                        fieldbackground="#0d1424", rowheight=28,
+                        font=("Segoe UI", 11))
+        style.configure("Shifts.Treeview.Heading",
+                        background="#1e2a3a", foreground="#94a3b8",
+                        font=("Segoe UI", 10, "bold"))
+        style.map("Shifts.Treeview", background=[("selected", "#1e3a5f")])
+
+        cols = ("id", "cashier", "date", "open_time", "close_time",
+                "opening", "sales", "expected", "closing", "discrepancy", "status")
+        self._tree = ttk.Treeview(tbl_frame, columns=cols, show="headings",
+                                   style="Shifts.Treeview", selectmode="browse")
+        heads = {
+            "id": ("#", 50), "cashier": ("Cashier", 140), "date": ("Date", 90),
+            "open_time": ("Opened", 76), "close_time": ("Closed", 76),
+            "opening": ("Opening ₹", 90), "sales": ("Sales ₹", 90),
+            "expected": ("Expected ₹", 100), "closing": ("Closing ₹", 100),
+            "discrepancy": ("Discrepancy", 100), "status": ("Status", 70),
+        }
+        for col, (head, width) in heads.items():
+            self._tree.heading(col, text=head)
+            self._tree.column(col, width=width, minwidth=width, anchor="center")
+        self._tree.column("cashier", anchor="w")
+
+        vsb = ttk.Scrollbar(tbl_frame, orient="vertical", command=self._tree.yview)
+        self._tree.configure(yscrollcommand=vsb.set)
+        self._tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+
+    def refresh(self):
+        from_d = self._from_var.get().strip() or None
+        to_d   = self._to_var.get().strip() or None
+        shifts = db.get_all_shifts(from_date=from_d, to_date=to_d)
+        for row in self._tree.get_children():
+            self._tree.delete(row)
+        for s in shifts:
+            disc = s.get("discrepancy")
+            opened = str(s.get("opened_at") or "")
+            closed = str(s.get("closed_at") or "")
+            if "T" in opened:
+                opened = opened.replace("T", " ")
+            if "T" in closed:
+                closed = closed.replace("T", " ")
+            date_part  = opened[:10] if len(opened) >= 10 else opened
+            open_time  = opened[11:16] if len(opened) >= 16 else ""
+            close_time = closed[11:16] if len(closed) >= 16 else ("—" if not closed else closed[:5])
+            tag = "open" if s.get("status") == "Open" else ""
+            if disc is not None:
+                disc_f = float(disc)
+                if disc_f == 0:
+                    tag = "exact"
+                elif abs(disc_f) <= 50:
+                    tag = "warn"
+                else:
+                    tag = "bad"
+            disc_str = (f"₹ {float(disc):+,.2f}" if disc is not None else "—")
+            self._tree.insert("", "end", tags=(tag,), values=(
+                s.get("id", ""),
+                s.get("full_name") or s.get("username", ""),
+                date_part,
+                open_time,
+                close_time,
+                f"₹ {float(s.get('opening_cash') or 0):,.2f}",
+                f"₹ {float(s.get('sales_total') or 0):,.2f}",
+                (f"₹ {float(s.get('expected_cash') or 0):,.2f}"
+                 if s.get("expected_cash") is not None else "—"),
+                (f"₹ {float(s.get('closing_cash') or 0):,.2f}"
+                 if s.get("closing_cash") is not None else "—"),
+                disc_str,
+                s.get("status", ""),
+            ))
+        self._tree.tag_configure("open",  foreground="#f59e0b")
+        self._tree.tag_configure("exact", foreground="#2ecc71")
+        self._tree.tag_configure("warn",  foreground="#f59e0b")
+        self._tree.tag_configure("bad",   foreground="#e74c3c")
+
+
+# ── Shared denomination cash-count widget ─────────────────────────────────────
+
+_DENOMINATIONS = [2000, 500, 200, 100, 50, 20, 10, 5, 2, 1]
+
+
+class _DenomFrame(ctk.CTkScrollableFrame):
+    """Reusable denomination entry grid: count × value = subtotal, with live total."""
+
+    def __init__(self, parent, on_change=None, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._on_change = on_change
+        self._vars: list = []
+        self._total_lbl = None
+        self._build()
+
+    def _build(self):
+        hdr_font = ctk.CTkFont(size=11, weight="bold")
+        ctk.CTkLabel(self, text="Denomination", font=hdr_font,
+                     text_color="#94a3b8").grid(row=0, column=0, padx=8, pady=(4, 2), sticky="w")
+        ctk.CTkLabel(self, text="Count", font=hdr_font,
+                     text_color="#94a3b8").grid(row=0, column=1, padx=8, pady=(4, 2))
+        ctk.CTkLabel(self, text="Amount", font=hdr_font,
+                     text_color="#94a3b8").grid(row=0, column=2, padx=8, pady=(4, 2), sticky="e")
+        for r, denom in enumerate(_DENOMINATIONS, start=1):
+            ctk.CTkLabel(self, text=f"₹ {denom:,}",
+                         text_color="#ecf0f1",
+                         font=ctk.CTkFont(size=12)).grid(row=r, column=0, padx=8, pady=2, sticky="w")
+            var = ctk.StringVar(value="0")
+            self._vars.append(var)
+            ctk.CTkEntry(self, textvariable=var, width=70,
+                         justify="center",
+                         font=ctk.CTkFont(size=12)).grid(row=r, column=1, padx=8, pady=2)
+            amt_lbl = ctk.CTkLabel(self, text="₹ 0",
+                                   text_color="#2dd4bf",
+                                   font=ctk.CTkFont(size=12))
+            amt_lbl.grid(row=r, column=2, padx=8, pady=2, sticky="e")
+            var.trace_add("write", lambda *_, d=denom, lbl=amt_lbl: self._update_row(d, lbl))
+        sep = len(_DENOMINATIONS) + 1
+        ctk.CTkFrame(self, fg_color="#1e2a3a", height=1,
+                     corner_radius=0).grid(row=sep, column=0, columnspan=3,
+                                            sticky="ew", padx=4, pady=4)
+        self._total_lbl = ctk.CTkLabel(self, text="Total:  ₹ 0.00",
+                                        font=ctk.CTkFont(size=14, weight="bold"),
+                                        text_color="#2ecc71")
+        self._total_lbl.grid(row=sep + 1, column=0, columnspan=3, pady=(4, 8))
+
+    def _update_row(self, denom: int, lbl):
+        idx = _DENOMINATIONS.index(denom)
+        try:
+            cnt = max(0, int(self._vars[idx].get() or 0))
+        except (ValueError, TypeError):
+            cnt = 0
+        lbl.configure(text=f"₹ {cnt * denom:,}")
+        self._total_lbl.configure(text=f"Total:  ₹ {self.total():,.2f}")
+        if self._on_change:
+            self._on_change(self.total())
+
+    def total(self) -> float:
+        t = 0.0
+        for var, denom in zip(self._vars, _DENOMINATIONS):
+            try:
+                t += max(0, int(var.get() or 0)) * denom
+            except (ValueError, TypeError):
+                pass
+        return round(t, 2)
+
+
+# ── Open Shift dialog ─────────────────────────────────────────────────────────
+
+class OpenShiftDialog(ctk.CTkToplevel):
+    """Modal: cashier must enter opening cash before POS is usable."""
+
+    def __init__(self, parent, user: dict, on_opened, on_exit):
+        super().__init__(parent)
+        self.title("Open Shift")
+        self.geometry("480x600")
+        self.resizable(False, False)
+        self._user     = user
+        self._on_opened = on_opened
+        self._on_exit   = on_exit
+        self.protocol("WM_DELETE_WINDOW", self._on_close_btn)
+        self._build()
+        self.grab_set()
+        self.focus()
+
+    def _build(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+        ctk.CTkLabel(self, text="Open Shift",
+                     font=ctk.CTkFont(size=20, weight="bold"),
+                     text_color="#2dd4bf").grid(row=0, column=0, pady=(24, 2))
+        ctk.CTkLabel(
+            self,
+            text=(f"Cashier: {self._user.get('full_name') or self._user.get('username','')}\n"
+                  "Count the opening cash in the drawer and enter it below."),
+            text_color="#94a3b8", font=ctk.CTkFont(size=12), justify="center",
+        ).grid(row=1, column=0, pady=(0, 8))
+        self._denom = _DenomFrame(self, fg_color="#0d1424", corner_radius=10, height=380)
+        self._denom.grid(row=2, column=0, sticky="nsew", padx=18, pady=4)
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.grid(row=3, column=0, pady=16)
+        ctk.CTkButton(btn_frame, text="Exit POS", width=110,
+                      fg_color="#7f1f1f", hover_color="#c0392b",
+                      command=self._on_exit).pack(side="left", padx=8)
+        ctk.CTkButton(btn_frame, text="Open Shift  →", width=150,
+                      fg_color="#0d9488", hover_color="#0a7a70",
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      command=self._submit).pack(side="left", padx=8)
+
+    def _submit(self):
+        opening_cash = self._denom.total()
+        try:
+            uid   = int(self._user.get("id") or 0)
+            uname = self._user.get("username", "")
+            fname = self._user.get("full_name", "") or uname
+            sid   = db.open_shift(uid, uname, fname, opening_cash)
+            self.destroy()
+            self._on_opened(sid, opening_cash)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self)
+
+    def _on_close_btn(self):
+        if messagebox.askyesno("Exit POS?",
+                               "No shift opened. Exit the POS?", parent=self):
+            self._on_exit()
+
+
+# ── Close Shift dialog ────────────────────────────────────────────────────────
+
+class CloseShiftDialog(ctk.CTkToplevel):
+    """Modal: denomination cash count + discrepancy summary before closing shift."""
+
+    def __init__(self, parent, shift_id: int, opening_cash: float, on_closed):
+        super().__init__(parent)
+        self.title("Close Shift")
+        self.geometry("520x700")
+        self.resizable(False, False)
+        self._shift_id    = shift_id
+        self._opening_cash = opening_cash
+        self._on_closed   = on_closed
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self._build()
+        self.grab_set()
+        self.focus()
+
+    def _build(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+        ctk.CTkLabel(self, text="Close Shift",
+                     font=ctk.CTkFont(size=20, weight="bold"),
+                     text_color="#e74c3c").grid(row=0, column=0, pady=(20, 2))
+        sales = db.get_shift_sales(self._shift_id)
+        ctk.CTkLabel(
+            self,
+            text=(f"Sales this shift:  {sales['count']} bills  |  "
+                  f"₹ {sales['total']:,.2f}"),
+            text_color="#94a3b8", font=ctk.CTkFont(size=12),
+        ).grid(row=1, column=0, pady=(0, 6))
+        self._denom = _DenomFrame(self, fg_color="#0d1424", corner_radius=10,
+                                   height=380, on_change=self._update_discrepancy)
+        self._denom.grid(row=2, column=0, sticky="nsew", padx=18, pady=4)
+        # discrepancy row
+        disc_frame = ctk.CTkFrame(self, fg_color="#0d1424", corner_radius=8)
+        disc_frame.grid(row=3, column=0, sticky="ew", padx=18, pady=(4, 0))
+        disc_frame.grid_columnconfigure(1, weight=1)
+        expected = round(self._opening_cash + sales["total"], 2)
+        ctk.CTkLabel(disc_frame, text="Expected Cash:",
+                     text_color="#94a3b8", font=ctk.CTkFont(size=11)).grid(
+                         row=0, column=0, padx=12, pady=4, sticky="w")
+        ctk.CTkLabel(disc_frame, text=f"₹ {expected:,.2f}",
+                     text_color="#ecf0f1", font=ctk.CTkFont(size=12)).grid(
+                         row=0, column=1, padx=12, pady=4, sticky="e")
+        ctk.CTkLabel(disc_frame, text="Discrepancy:",
+                     text_color="#94a3b8", font=ctk.CTkFont(size=11)).grid(
+                         row=1, column=0, padx=12, pady=(0, 6), sticky="w")
+        self._disc_lbl = ctk.CTkLabel(disc_frame, text="—",
+                                       font=ctk.CTkFont(size=13, weight="bold"),
+                                       text_color="#94a3b8")
+        self._disc_lbl.grid(row=1, column=1, padx=12, pady=(0, 6), sticky="e")
+        # notes
+        ctk.CTkLabel(self, text="Notes (optional):",
+                     text_color="#94a3b8", font=ctk.CTkFont(size=11)).grid(
+                         row=4, column=0, sticky="w", padx=20, pady=(8, 0))
+        self._notes = ctk.CTkEntry(self, placeholder_text="e.g. float left in drawer…")
+        self._notes.grid(row=5, column=0, sticky="ew", padx=18, pady=(2, 0))
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.grid(row=6, column=0, pady=14)
+        ctk.CTkButton(btn_frame, text="Cancel", width=100,
+                      fg_color="#1a2235", hover_color="#2a3245",
+                      command=self.destroy).pack(side="left", padx=8)
+        ctk.CTkButton(btn_frame, text="Close Shift  →", width=150,
+                      fg_color="#e74c3c", hover_color="#c0392b",
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      command=self._submit).pack(side="left", padx=8)
+
+    def _update_discrepancy(self, closing_cash: float):
+        sales    = db.get_shift_sales(self._shift_id)
+        expected = round(self._opening_cash + sales["total"], 2)
+        disc     = round(closing_cash - expected, 2)
+        if disc == 0:
+            color, text = "#2ecc71", "₹ 0.00  ✓"
+        elif abs(disc) <= 50:
+            color, text = "#f59e0b", f"₹ {disc:+,.2f}"
+        else:
+            color, text = "#e74c3c", f"₹ {disc:+,.2f}"
+        self._disc_lbl.configure(text=text, text_color=color)
+
+    def _submit(self):
+        closing_cash = self._denom.total()
+        if closing_cash == 0:
+            if not messagebox.askyesno("Zero Cash?",
+                                       "Closing cash is ₹ 0.00. Continue?", parent=self):
+                return
+        notes = self._notes.get().strip()
+        try:
+            result = db.close_shift(self._shift_id, closing_cash, notes)
+            self.destroy()
+            self._on_closed(result)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self)
+
+
 # ── Cashier POS ───────────────────────────────────────────────────────────────
 
 class CashierApp(ctk.CTk):
@@ -14412,6 +14752,10 @@ class CashierApp(ctk.CTk):
         self._all_products: list[dict] = []
         self._barcode_buf = ""
         self._barcode_ts  = 0.0
+        # Phase 6: shift management
+        self._shift_id:        int | None = None
+        self._shift_cash:      float      = 0.0
+        self._shift_opened_at: str        = ""
         self._build()
         self._load_products()
         # Phase 4: multi-counter sync
@@ -14419,6 +14763,7 @@ class CashierApp(ctk.CTk):
         db_connection.start_reconnect_watcher()
         self._status_tick()   # start the 5-second status refresh loop
         self._stock_tick()    # start the 30-second stock polling loop
+        self.after(300, self._ensure_shift)
 
     # ── build UI ──────────────────────────────────────────────────────────────
 
@@ -14430,7 +14775,6 @@ class CashierApp(ctk.CTk):
         hdr = ctk.CTkFrame(self, fg_color="#0d1424", corner_radius=0, height=52)
         hdr.grid(row=0, column=0, sticky="ew")
         hdr.grid_columnconfigure(1, weight=1)
-        hdr.grid_columnconfigure(2, weight=0)
         ctk.CTkLabel(hdr, text="🧾  POS Billing",
                      font=ctk.CTkFont(size=18, weight="bold"),
                      text_color="#2dd4bf").grid(row=0, column=0, padx=18, pady=10)
@@ -14438,13 +14782,18 @@ class CashierApp(ctk.CTk):
                      text=f"Cashier: {self.current_user.get('full_name') or self.current_user.get('username','')}",
                      text_color="#94a3b8", font=ctk.CTkFont(size=12)).grid(
                          row=0, column=1, sticky="w", padx=8)
+        ctk.CTkButton(hdr, text="🔒  Shift", width=100, height=30,
+                      fg_color="#1e3a5f", hover_color="#2a4a6f",
+                      font=ctk.CTkFont(size=12),
+                      command=self._close_shift_clicked).grid(
+                          row=0, column=2, padx=8, pady=10)
         self._status_lbl = ctk.CTkLabel(
             hdr, text="● …", text_color="#94a3b8", font=ctk.CTkFont(size=11))
-        self._status_lbl.grid(row=0, column=2, padx=14)
+        self._status_lbl.grid(row=0, column=3, padx=14)
         ctk.CTkButton(hdr, text="✕  Exit", width=90, height=30,
                       fg_color="#7f1f1f", hover_color="#c0392b",
                       font=ctk.CTkFont(size=12),
-                      command=self.destroy).grid(row=0, column=3, padx=14, pady=10)
+                      command=self.destroy).grid(row=0, column=4, padx=14, pady=10)
 
         # ── body: left=search/results, right=cart ──
         body = ctk.CTkFrame(self, fg_color="#0a0f1e", corner_radius=0)
@@ -14732,6 +15081,7 @@ class CashierApp(ctk.CTk):
                 supply_type="intra",
                 items=items,
                 status="Paid",
+                shift_id=self._shift_id,
             )
             # Reload stock counts
             self._load_products()
@@ -14741,6 +15091,78 @@ class CashierApp(ctk.CTk):
             messagebox.showinfo("Bill Saved", f"Bill {inv_number} saved successfully.", parent=self)
         except Exception as e:
             messagebox.showerror("Error", str(e), parent=self)
+
+    # ── Phase 6: shift management ─────────────────────────────────────────────
+
+    def _ensure_shift(self):
+        """Check for an open shift; show OpenShiftDialog if none exists."""
+        uid = int(self.current_user.get("id") or 0)
+        existing = db.get_open_shift(uid)
+        if existing:
+            self._shift_id        = existing["id"]
+            self._shift_cash      = float(existing.get("opening_cash") or 0)
+            self._shift_opened_at = str(existing.get("opened_at") or "")
+        else:
+            OpenShiftDialog(self, self.current_user,
+                            on_opened=self._on_shift_opened,
+                            on_exit=self._exit_no_shift)
+
+    def _on_shift_opened(self, shift_id: int, opening_cash: float):
+        self._shift_id        = shift_id
+        self._shift_cash      = opening_cash
+        self._shift_opened_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    def _exit_no_shift(self):
+        """User chose to exit instead of opening a shift."""
+        self._shift_id = None
+        self.destroy()
+
+    def _close_shift_clicked(self):
+        if self._shift_id is None:
+            messagebox.showinfo("No Shift", "No shift is currently open.", parent=self)
+            return
+        CloseShiftDialog(self, self._shift_id, self._shift_cash,
+                         on_closed=self._on_shift_closed)
+
+    def _on_shift_closed(self, result: dict):
+        disc = result["discrepancy"]
+        if disc == 0:
+            disc_str = "₹ 0.00  — exact ✓"
+        else:
+            disc_str = f"₹ {disc:+,.2f}"
+        messagebox.showinfo(
+            "Shift Closed",
+            f"Sales:        {result['sales_count']} bills\n"
+            f"Sales Total:  ₹ {result['sales_total']:,.2f}\n"
+            f"Opening Cash: ₹ {result['opening_cash']:,.2f}\n"
+            f"Expected:     ₹ {result['expected_cash']:,.2f}\n"
+            f"Closing Cash: ₹ {result['closing_cash']:,.2f}\n"
+            f"Discrepancy:  {disc_str}",
+            parent=self,
+        )
+        self._shift_id = None
+
+    def _on_shift_closed_then_exit(self, result: dict):
+        self._on_shift_closed(result)
+        self.after(100, ctk.CTk.destroy, self)
+
+    def destroy(self):
+        if self._shift_id is not None:
+            choice = messagebox.askyesnocancel(
+                "Exit POS",
+                "Close shift before exiting?\n\n"
+                "Yes  — close shift then exit\n"
+                "No   — exit without closing shift\n"
+                "Cancel — stay in POS",
+                parent=self,
+            )
+            if choice is None:
+                return
+            if choice:
+                CloseShiftDialog(self, self._shift_id, self._shift_cash,
+                                 on_closed=self._on_shift_closed_then_exit)
+                return
+        super().destroy()
 
     def _maybe_print_receipt(self, inv_number: str, inv_date: str, items: list):
         """Print receipt if printer is enabled. Auto-print or ask based on config."""
