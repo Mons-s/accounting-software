@@ -1091,6 +1091,15 @@ class DashboardPage(BasePage):
                 command=lambda p=page: self.app._show_page(p),
             ).pack(side="left", padx=6, pady=10)
 
+        ctk.CTkButton(
+            qa_frame, text="📱 Owner Dashboard", width=148, height=30,
+            fg_color="#1e3a5f", hover_color="#2a4f80",
+            text_color="#7dd3fc",
+            font=ctk.CTkFont(size=11),
+            corner_radius=6,
+            command=self._open_owner_dashboard,
+        ).pack(side="left", padx=6, pady=10)
+
         # ── Lower panels ─────────────────────────────────────────────────────
         lower = ctk.CTkFrame(self, fg_color="transparent")
         lower.pack(fill="both", expand=True, padx=24, pady=(0, 24))
@@ -1100,6 +1109,43 @@ class DashboardPage(BasePage):
 
         self._recent_invoices_panel(lower).grid(row=0, column=0, padx=(0, 8), sticky="nsew")
         self._overdue_panel(lower).grid(row=0, column=1, padx=(8, 0), sticky="nsew")
+
+    def _open_owner_dashboard(self):
+        import web_dashboard, webbrowser
+        port = web_dashboard.start()
+        ip   = web_dashboard.get_local_ip()
+        url  = f"http://{ip}:{port}"
+
+        win = ctk.CTkToplevel(self)
+        win.title("Owner Dashboard")
+        win.geometry("360x220")
+        win.resizable(False, False)
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="📱 Owner Dashboard",
+                     font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color="#2dd4bf").pack(pady=(22, 6))
+        ctk.CTkLabel(win, text="Open on any browser on the same Wi-Fi:",
+                     font=ctk.CTkFont(size=11), text_color="#94a3b8").pack()
+        ctk.CTkLabel(win, text=url,
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     text_color="#7dd3fc").pack(pady=(10, 4))
+        ctk.CTkLabel(win, text="Auto-refreshes every 30 seconds",
+                     font=ctk.CTkFont(size=10), text_color="#64748b").pack()
+
+        def _copy():
+            win.clipboard_clear(); win.clipboard_append(url)
+        def _open():
+            webbrowser.open(url)
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(pady=16)
+        ctk.CTkButton(btn_row, text="📋 Copy URL", width=120, height=32,
+                      fg_color="#1e3a5f", hover_color="#2a4f80",
+                      text_color="#7dd3fc", command=_copy).pack(side="left", padx=6)
+        ctk.CTkButton(btn_row, text="🌐 Open Browser", width=130, height=32,
+                      fg_color="#0d9488", hover_color="#0a7a70",
+                      command=_open).pack(side="left", padx=6)
 
     def _recent_invoices_panel(self, parent):
         f = ctk.CTkFrame(parent, fg_color="#16213e", corner_radius=12)
