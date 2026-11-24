@@ -1112,9 +1112,9 @@ class DashboardPage(BasePage):
 
     def _open_owner_dashboard(self):
         import web_dashboard, webbrowser
-        port = web_dashboard.start()
+        port, token = web_dashboard.start()
         ip   = web_dashboard.get_local_ip()
-        url  = f"http://{ip}:{port}"
+        url  = f"http://{ip}:{port}/?t={token}"
 
         win = ctk.CTkToplevel(self)
         win.title("Owner Dashboard")

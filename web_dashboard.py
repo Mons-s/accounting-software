@@ -10,10 +10,13 @@ Usage
     # owner visits  http://<ip>:<port>  on their phone
 """
 
+import hmac
 import json
+import secrets as _secrets
 import socket
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlparse
 
 import database as db
 import db_connection
@@ -21,6 +24,7 @@ import db_connection
 PORT = 8765
 _server: "HTTPServer | None" = None
 _thread: "threading.Thread | None" = None
+_token: str = ""
 
 # ---------------------------------------------------------------------------
 # Data
@@ -194,10 +198,13 @@ main{padding:14px;max-width:540px;margin:0 auto}
 <script>
 const D=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const fmt=n=>'₹'+Number(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+function esc(s){const t=document.createElement('span');t.textContent=String(s??'');return t.innerHTML;}
+
+function tok(){const p=new URLSearchParams(location.search);return p.get('t')||'';}
 
 async function load(){
   try{
-    const r=await fetch('/api/summary');
+    const r=await fetch('/api/summary?t='+encodeURIComponent(tok()));
     if(!r.ok)throw new Error(r.status);
     const d=await r.json();
 
@@ -238,8 +245,8 @@ async function load(){
     else{lsEl.innerHTML=d.low_stock.map(p=>{
       const pct=p.threshold>0?p.stock/p.threshold:0;
       const cls=pct===0?'red':'ylw';
-      const lbl=pct===0?'Out of stock':`${p.stock} / ${p.threshold} ${p.unit}`;
-      return`<div class="row"><div><div class="rn">${p.name}</div></div><span class="badge ${cls}">${lbl}</span></div>`;
+      const lbl=pct===0?'Out of stock':`${esc(p.stock)} / ${esc(p.threshold)} ${esc(p.unit)}`;
+      return`<div class="row"><div><div class="rn">${esc(p.name)}</div></div><span class="badge ${cls}">${lbl}</span></div>`;
     }).join('');}
 
     // recent bills
@@ -247,7 +254,7 @@ async function load(){
     if(!d.recent_bills.length){rbEl.innerHTML='<div class="empty">No paid bills yet.</div>';}
     else{rbEl.innerHTML=d.recent_bills.map(b=>
       `<div class="row">
-        <div><div class="rn">${b.invoice_number}</div><div class="rs">${b.invoice_date}</div></div>
+        <div><div class="rn">${esc(b.invoice_number)}</div><div class="rs">${esc(b.invoice_date)}</div></div>
         <span class="grn">${fmt(b.grand_total)}</span>
       </div>`
     ).join('');}
@@ -265,15 +272,28 @@ setInterval(load,30000);
 
 
 class _Handler(BaseHTTPRequestHandler):
+    def _check_token(self) -> bool:
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        tok = params.get("t", [""])[0]
+        return bool(tok and _token and hmac.compare_digest(tok, _token))
+
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        if not self._check_token():
+            self.send_response(403)
+            self.end_headers()
+            return
+        parsed_path = urlparse(self.path).path
+        if parsed_path in ("/", "/index.html"):
             body = _HTML.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Security-Policy",
+                             "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
             self.end_headers()
             self.wfile.write(body)
-        elif self.path == "/api/summary":
+        elif parsed_path == "/api/summary":
             try:
                 data = _summary()
                 body = json.dumps(data).encode()
@@ -282,8 +302,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            except Exception as exc:
-                err = json.dumps({"error": str(exc)}).encode()
+            except Exception:
+                err = json.dumps({"error": "Internal server error"}).encode()
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(err)))
@@ -313,15 +333,16 @@ def get_local_ip() -> str:
         s.close()
 
 
-def start(port: int = PORT) -> int:
-    """Start the dashboard server (idempotent). Returns the port in use."""
-    global _server, _thread
+def start(port: int = PORT) -> tuple:
+    """Start the dashboard server (idempotent). Returns (port, token)."""
+    global _server, _thread, _token
     if _thread and _thread.is_alive():
-        return port
+        return port, _token
+    _token = _secrets.token_urlsafe(32)
     _server = HTTPServer(("0.0.0.0", port), _Handler)
     _thread = threading.Thread(target=_server.serve_forever, daemon=True, name="dashboard-http")
     _thread.start()
-    return port
+    return port, _token
 
 
 def stop() -> None:
