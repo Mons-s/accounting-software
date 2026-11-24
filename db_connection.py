@@ -35,6 +35,10 @@ _shop_id: Optional[str] = None
 _cloud_ok: Optional[bool] = None   # None = untested
 _lock = threading.Lock()
 
+# Reconnect watcher
+_reconnect_callbacks: list = []
+_reconnect_thread: Optional[threading.Thread] = None
+
 
 def configure(pg_url: str, shop_id: str) -> None:
     """Call once at startup with the PostgreSQL URL and this shop's UUID."""
@@ -47,6 +51,49 @@ def configure(pg_url: str, shop_id: str) -> None:
 def is_cloud() -> bool:
     """True if the last successful get_connection() used PostgreSQL."""
     return _cloud_ok is True
+
+
+def register_reconnect_callback(fn) -> None:
+    """Register fn to be called (from the watcher thread) when cloud comes back."""
+    _reconnect_callbacks.append(fn)
+
+
+def start_reconnect_watcher() -> None:
+    """Start a daemon thread that retries the cloud connection every 30 s."""
+    global _reconnect_thread
+    if _reconnect_thread and _reconnect_thread.is_alive():
+        return
+    _reconnect_thread = threading.Thread(target=_reconnect_loop, daemon=True, name="pg-reconnect")
+    _reconnect_thread.start()
+
+
+def _reconnect_loop() -> None:
+    import time
+    while True:
+        time.sleep(30)
+        global _cloud_ok
+        if not (_pg_url and _shop_id):
+            continue
+        if _cloud_ok:
+            continue   # already online; get_connection() keeps it fresh
+        # Try a lightweight probe
+        try:
+            import psycopg2
+            conn = psycopg2.connect(_pg_url, connect_timeout=5)
+            cur = conn.cursor()
+            cur.execute("SET search_path TO accounting, public")
+            cur.execute("SET app.shop_id = %s", (_shop_id,))
+            conn.commit()
+            cur.close()
+            conn.close()
+            _cloud_ok = True
+            for fn in list(_reconnect_callbacks):
+                try:
+                    fn()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

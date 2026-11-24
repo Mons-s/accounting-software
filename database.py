@@ -233,6 +233,12 @@ def initialize_db():
             is_active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS offline_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            payload TEXT NOT NULL,
+            queued_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
     """)
     conn.commit()
     conn.close()
@@ -701,6 +707,18 @@ def _migrate_db():
         ii_cols = {col[1] for col in conn.execute("PRAGMA table_info(invoice_items)").fetchall()}
         if "product_id" not in ii_cols:
             conn.execute("ALTER TABLE invoice_items ADD COLUMN product_id INTEGER DEFAULT NULL")
+
+        # offline_queue (Phase 4 — multi-counter sync)
+        tables = {t[0] for t in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "offline_queue" not in tables:
+            conn.execute("""
+                CREATE TABLE offline_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    payload TEXT NOT NULL,
+                    queued_at TEXT DEFAULT (datetime('now', 'localtime'))
+                )
+            """)
 
         conn.commit()
 
@@ -1524,6 +1542,32 @@ def create_invoice(invoice_number, client_id, invoice_date, due_date,
                     "UPDATE products SET stock_quantity = MAX(0, stock_quantity - ?) WHERE id=?",
                     (it["quantity"], pid),
                 )
+
+        # Queue for cloud sync when we're running against local SQLite
+        if not getattr(conn, "is_pg", False):
+            import json as _json
+            _payload = _json.dumps({
+                "invoice_number": invoice_number,
+                "walkin": True,
+                "invoice_date": invoice_date,
+                "due_date": due_date,
+                "supply_type": supply_type,
+                "notes": notes,
+                "status": status,
+                "discount_pct": discount_pct,
+                "items": [{
+                    "description": it["description"],
+                    "hsn_code":    it.get("hsn_code", ""),
+                    "quantity":    it["quantity"],
+                    "unit":        it.get("unit", "pcs"),
+                    "unit_price":  it["unit_price"],
+                    "gst_rate":    it["gst_rate"],
+                    "product_name": it.get("description", ""),
+                    "product_sku":  it.get("sku", ""),
+                } for it in items],
+            })
+            conn.execute("INSERT INTO offline_queue (payload) VALUES (?)", (_payload,))
+
         conn.commit()
     check_and_create_alerts()
     post_invoice_journal(inv_id)
@@ -4289,3 +4333,87 @@ def get_upcoming_cheques(days: int = 30):
             "SELECT * FROM cheques WHERE cheque_date BETWEEN ? AND ? AND status='Pending' ORDER BY cheque_date",
             (today, future),
         ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Offline queue sync
+# ---------------------------------------------------------------------------
+
+def get_offline_queue_count() -> int:
+    """Number of bills queued locally waiting to sync to the cloud."""
+    import sqlite3 as _sq
+    try:
+        qconn = _sq.connect(db_connection.DB_PATH)
+        row = qconn.execute("SELECT COUNT(*) FROM offline_queue").fetchone()
+        qconn.close()
+        return row[0] if row else 0
+    except Exception:
+        return 0
+
+
+def sync_offline_queue() -> int:
+    """
+    Push all locally-queued offline bills to PostgreSQL.
+    Should only be called when is_cloud() is True.
+    Returns the number of invoices successfully synced.
+    """
+    import json as _json, sqlite3 as _sq
+    if not db_connection.is_cloud():
+        return 0
+
+    # Read queue from SQLite directly (get_connection() would return PG now)
+    qconn = _sq.connect(db_connection.DB_PATH)
+    qconn.row_factory = _sq.Row
+    try:
+        rows = qconn.execute("SELECT * FROM offline_queue ORDER BY id").fetchall()
+    except Exception:
+        qconn.close()
+        return 0
+
+    synced = 0
+    for row in rows:
+        try:
+            p = _json.loads(row["payload"])
+
+            # Resolve walk-in client on the cloud DB
+            client_id = get_or_create_walkin_client()
+
+            # Resolve product_ids in PostgreSQL by name/sku
+            with get_connection() as pg:
+                all_pg_products = pg.execute("SELECT id, name, sku FROM products").fetchall()
+            pg_by_sku  = {(r["sku"]  or "").lower(): r["id"] for r in all_pg_products if r["sku"]}
+            pg_by_name = {r["name"].lower(): r["id"] for r in all_pg_products}
+
+            items = []
+            for it in p["items"]:
+                pid = (pg_by_sku.get((it.get("product_sku") or "").lower())
+                       or pg_by_name.get((it.get("product_name") or it["description"]).lower()))
+                items.append({
+                    "description": it["description"],
+                    "hsn_code":    it.get("hsn_code", ""),
+                    "quantity":    it["quantity"],
+                    "unit":        it.get("unit", "pcs"),
+                    "unit_price":  it["unit_price"],
+                    "gst_rate":    it["gst_rate"],
+                    "product_id":  pid,
+                })
+
+            create_invoice(
+                invoice_number=p["invoice_number"],
+                client_id=client_id,
+                invoice_date=p["invoice_date"],
+                due_date=p["due_date"],
+                supply_type=p["supply_type"],
+                items=items,
+                notes=p.get("notes", ""),
+                status=p.get("status", "Paid"),
+                discount_pct=p.get("discount_pct", 0.0),
+            )
+            qconn.execute("DELETE FROM offline_queue WHERE id=?", (row["id"],))
+            qconn.commit()
+            synced += 1
+        except Exception:
+            pass   # leave in queue; will retry on next reconnect
+
+    qconn.close()
+    return synced

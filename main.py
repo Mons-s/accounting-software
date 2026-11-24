@@ -14194,6 +14194,7 @@ class CashierApp(ctk.CTk):
 
     def __init__(self, user: dict):
         super().__init__()
+        import db_connection
         self.current_user = user
         self.title(f"POS — {user.get('full_name') or user.get('username', 'Cashier')}")
         self.geometry("900x650")
@@ -14204,6 +14205,11 @@ class CashierApp(ctk.CTk):
         self._barcode_ts  = 0.0
         self._build()
         self._load_products()
+        # Phase 4: multi-counter sync
+        db_connection.register_reconnect_callback(self._on_cloud_reconnect)
+        db_connection.start_reconnect_watcher()
+        self._status_tick()   # start the 5-second status refresh loop
+        self._stock_tick()    # start the 30-second stock polling loop
 
     # ── build UI ──────────────────────────────────────────────────────────────
 
@@ -14215,6 +14221,7 @@ class CashierApp(ctk.CTk):
         hdr = ctk.CTkFrame(self, fg_color="#0d1424", corner_radius=0, height=52)
         hdr.grid(row=0, column=0, sticky="ew")
         hdr.grid_columnconfigure(1, weight=1)
+        hdr.grid_columnconfigure(2, weight=0)
         ctk.CTkLabel(hdr, text="🧾  POS Billing",
                      font=ctk.CTkFont(size=18, weight="bold"),
                      text_color="#2dd4bf").grid(row=0, column=0, padx=18, pady=10)
@@ -14222,10 +14229,13 @@ class CashierApp(ctk.CTk):
                      text=f"Cashier: {self.current_user.get('full_name') or self.current_user.get('username','')}",
                      text_color="#94a3b8", font=ctk.CTkFont(size=12)).grid(
                          row=0, column=1, sticky="w", padx=8)
+        self._status_lbl = ctk.CTkLabel(
+            hdr, text="● …", text_color="#94a3b8", font=ctk.CTkFont(size=11))
+        self._status_lbl.grid(row=0, column=2, padx=14)
         ctk.CTkButton(hdr, text="✕  Exit", width=90, height=30,
                       fg_color="#7f1f1f", hover_color="#c0392b",
                       font=ctk.CTkFont(size=12),
-                      command=self.destroy).grid(row=0, column=2, padx=14, pady=10)
+                      command=self.destroy).grid(row=0, column=3, padx=14, pady=10)
 
         # ── body: left=search/results, right=cart ──
         body = ctk.CTkFrame(self, fg_color="#0a0f1e", corner_radius=0)
@@ -14425,6 +14435,66 @@ class CashierApp(ctk.CTk):
     def _clear_cart(self):
         self._cart.clear()
         self._refresh_cart()
+
+    # ── Phase 4: status / polling / sync ──────────────────────────────────────
+
+    def _status_tick(self):
+        """Refresh the online/offline badge every 5 seconds."""
+        import db_connection
+        try:
+            queued = db.get_offline_queue_count()
+            if db_connection.is_cloud():
+                if queued:
+                    self._status_lbl.configure(
+                        text=f"● Online  ({queued} syncing…)", text_color="#f59e0b")
+                else:
+                    self._status_lbl.configure(text="● Online", text_color="#2ecc71")
+            else:
+                if queued:
+                    self._status_lbl.configure(
+                        text=f"● Offline — {queued} bill{'s' if queued != 1 else ''} queued",
+                        text_color="#e74c3c")
+                else:
+                    self._status_lbl.configure(text="● Offline", text_color="#e74c3c")
+        except Exception:
+            pass
+        self.after(5_000, self._status_tick)
+
+    def _stock_tick(self):
+        """Reload product stock from the cloud every 30 seconds (multi-counter sync)."""
+        import db_connection, threading
+        if db_connection.is_cloud():
+            threading.Thread(target=self._bg_load_products, daemon=True).start()
+        self.after(30_000, self._stock_tick)
+
+    def _bg_load_products(self):
+        """Load products in a background thread, then update UI on main thread."""
+        try:
+            products = [dict(p) for p in db.get_all_products()]
+            self.after(0, lambda: self._apply_products(products))
+        except Exception:
+            pass
+
+    def _apply_products(self, products):
+        self._all_products = products
+        self._refresh_results()
+
+    def _on_cloud_reconnect(self):
+        """Called from the reconnect watcher thread when PostgreSQL comes back."""
+        self.after(0, self._do_sync)
+
+    def _do_sync(self):
+        try:
+            count = db.sync_offline_queue()
+            self._load_products()
+            self._status_tick()
+            if count:
+                messagebox.showinfo(
+                    "Sync Complete",
+                    f"{count} offline bill{'s' if count != 1 else ''} synced to cloud.",
+                    parent=self)
+        except Exception as e:
+            messagebox.showerror("Sync Error", str(e), parent=self)
 
     # ── save bill ──────────────────────────────────────────────────────────────
 
