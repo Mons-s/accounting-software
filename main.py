@@ -5229,6 +5229,8 @@ class SettingsPage(BasePage):
         self._build_ewb_tab(t7, firm)
         t8 = tabs.add("📧  Email")
         self._build_email_tab(t8, firm)
+        t9 = tabs.add("🖨  Printer")
+        self._build_printer_tab(t9)
         is_admin = self.app.current_user.get("role") == "admin"
         if is_admin:
             t5 = tabs.add("👥  Users")
@@ -5666,6 +5668,167 @@ class SettingsPage(BasePage):
         )
         self._saved_lbl.configure(text=f"Saved  {datetime.now().strftime('%I:%M %p')}")
         self._refresh_preview()
+
+    # ── Printer Tab ───────────────────────────────────────────────────────────
+
+    def _build_printer_tab(self, parent):
+        import thermal_receipt
+        cfg = thermal_receipt.load_config()
+
+        sc = ctk.CTkScrollableFrame(parent, fg_color="transparent")
+        sc.pack(fill="both", expand=True)
+
+        f = self._section(sc, "🖨  Thermal Receipt Printer")
+
+        # Enable toggle
+        ctk.CTkLabel(f, text="Enable thermal printing",
+                     text_color="#95a5a6", font=ctk.CTkFont(size=11)
+                     ).pack(anchor="w", padx=16, pady=(10, 0))
+        self._printer_enabled_var = ctk.StringVar(
+            value="Enabled" if cfg.get("enabled") else "Disabled")
+        ctk.CTkSegmentedButton(
+            f, values=["Enabled", "Disabled"],
+            variable=self._printer_enabled_var,
+            command=self._on_printer_type_change,
+        ).pack(anchor="w", padx=16, pady=(4, 0))
+
+        # Type
+        ctk.CTkLabel(f, text="Connection type",
+                     text_color="#95a5a6", font=ctk.CTkFont(size=11)
+                     ).pack(anchor="w", padx=16, pady=(10, 0))
+        self._printer_type_var = ctk.StringVar(
+            value="Windows Printer" if cfg.get("type", "windows") == "windows"
+            else "Network (TCP/IP)")
+        ctk.CTkSegmentedButton(
+            f, values=["Windows Printer", "Network (TCP/IP)"],
+            variable=self._printer_type_var,
+            command=self._on_printer_type_change,
+        ).pack(anchor="w", padx=16, pady=(4, 0))
+
+        # Windows printer name + refresh
+        self._win_printer_frame = ctk.CTkFrame(f, fg_color="transparent")
+        self._win_printer_frame.pack(fill="x", padx=16, pady=(8, 0))
+        ctk.CTkLabel(self._win_printer_frame, text="Windows printer name",
+                     text_color="#95a5a6", font=ctk.CTkFont(size=11)
+                     ).pack(anchor="w")
+        prow = ctk.CTkFrame(self._win_printer_frame, fg_color="transparent")
+        prow.pack(fill="x")
+        prow.columnconfigure(0, weight=1)
+        printers = thermal_receipt.list_windows_printers()
+        self._printer_name_var = ctk.StringVar(value=cfg.get("name", ""))
+        combo = ctk.CTkComboBox(
+            prow, variable=self._printer_name_var,
+            values=printers if printers else ["(no printers found)"])
+        combo.grid(row=0, column=0, sticky="ew")
+        ctk.CTkButton(
+            prow, text="⟳", width=36, height=32,
+            fg_color="#1e3a5f", hover_color="#2a4f80",
+            command=lambda: combo.configure(
+                values=thermal_receipt.list_windows_printers() or ["(no printers found)"])
+        ).grid(row=0, column=1, padx=(6, 0))
+
+        # Network fields
+        self._net_printer_frame = ctk.CTkFrame(f, fg_color="transparent")
+        self._net_printer_frame.pack(fill="x", padx=16, pady=(8, 0))
+        nr = ctk.CTkFrame(self._net_printer_frame, fg_color="transparent")
+        nr.pack(fill="x")
+        nr.columnconfigure(0, weight=3)
+        nr.columnconfigure(1, weight=1)
+        ctk.CTkLabel(nr, text="Printer IP address",
+                     text_color="#95a5a6", font=ctk.CTkFont(size=11)
+                     ).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(nr, text="Port",
+                     text_color="#95a5a6", font=ctk.CTkFont(size=11)
+                     ).grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self._printer_ip_var   = ctk.StringVar(value=cfg.get("ip", ""))
+        self._printer_port_var = ctk.StringVar(value=str(cfg.get("port", 9100)))
+        ctk.CTkEntry(nr, textvariable=self._printer_ip_var,
+                     placeholder_text="192.168.1.100"
+                     ).grid(row=1, column=0, sticky="ew")
+        ctk.CTkEntry(nr, textvariable=self._printer_port_var, width=70
+                     ).grid(row=1, column=1, sticky="ew", padx=(8, 0))
+
+        # Paper width
+        ctk.CTkLabel(f, text="Paper width",
+                     text_color="#95a5a6", font=ctk.CTkFont(size=11)
+                     ).pack(anchor="w", padx=16, pady=(10, 0))
+        self._printer_width_var = ctk.StringVar(
+            value="80mm (standard)" if cfg.get("width", 80) >= 70 else "58mm (narrow)")
+        ctk.CTkSegmentedButton(
+            f, values=["80mm (standard)", "58mm (narrow)"],
+            variable=self._printer_width_var,
+        ).pack(anchor="w", padx=16, pady=(4, 0))
+
+        # Auto-print
+        ctk.CTkLabel(f, text="Auto-print every bill",
+                     text_color="#95a5a6", font=ctk.CTkFont(size=11)
+                     ).pack(anchor="w", padx=16, pady=(10, 0))
+        self._printer_auto_var = ctk.StringVar(
+            value="Yes (auto)" if cfg.get("auto_print", True) else "No (ask me)")
+        ctk.CTkSegmentedButton(
+            f, values=["Yes (auto)", "No (ask me)"],
+            variable=self._printer_auto_var,
+        ).pack(anchor="w", padx=16, pady=(4, 12))
+
+        # Buttons
+        btn_row = ctk.CTkFrame(f, fg_color="transparent")
+        btn_row.pack(fill="x", padx=16, pady=(0, 14))
+        ctk.CTkButton(
+            btn_row, text="💾  Save Printer Settings", height=36,
+            fg_color="#0d9488", hover_color="#0a7a70",
+            command=self._save_printer_settings,
+        ).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(
+            btn_row, text="🖨  Test Print", height=36, width=120,
+            fg_color="#1e3a5f", hover_color="#2a4f80",
+            command=self._test_print,
+        ).pack(side="left")
+
+        self._on_printer_type_change()
+
+    def _on_printer_type_change(self, *_):
+        try:
+            is_net = self._printer_type_var.get() == "Network (TCP/IP)"
+            enabled = self._printer_enabled_var.get() == "Enabled"
+            state = "normal" if enabled else "disabled"
+            # show/hide relevant frame
+            if is_net:
+                self._win_printer_frame.pack_forget()
+                self._net_printer_frame.pack(fill="x", padx=16, pady=(8, 0),
+                                              after=self._win_printer_frame)
+            else:
+                self._net_printer_frame.pack_forget()
+                self._win_printer_frame.pack(fill="x", padx=16, pady=(8, 0))
+        except Exception:
+            pass
+
+    def _save_printer_settings(self):
+        import thermal_receipt
+        try:
+            cfg = {
+                "enabled":    self._printer_enabled_var.get() == "Enabled",
+                "type":       "network" if self._printer_type_var.get() == "Network (TCP/IP)"
+                              else "windows",
+                "name":       self._printer_name_var.get().strip(),
+                "ip":         self._printer_ip_var.get().strip(),
+                "port":       int(self._printer_port_var.get().strip() or 9100),
+                "width":      80 if "80" in self._printer_width_var.get() else 58,
+                "auto_print": self._printer_auto_var.get() == "Yes (auto)",
+            }
+            thermal_receipt.save_config(cfg)
+            messagebox.showinfo("Saved", "Printer settings saved.", parent=self)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self)
+
+    def _test_print(self):
+        import thermal_receipt
+        try:
+            self._save_printer_settings()
+            thermal_receipt.test_print()
+            messagebox.showinfo("Test Print", "Test page sent to printer!", parent=self)
+        except Exception as e:
+            messagebox.showerror("Print Error",
+                                 f"Could not reach printer:\n{e}", parent=self)
 
     # ── Users Tab (admin only) ─────────────────────────────────────────────────
 
@@ -14573,9 +14736,50 @@ class CashierApp(ctk.CTk):
             # Reload stock counts
             self._load_products()
             self._clear_cart()
+            # ── Thermal receipt printing ──────────────────────────────────
+            self._maybe_print_receipt(inv_number, today, items)
             messagebox.showinfo("Bill Saved", f"Bill {inv_number} saved successfully.", parent=self)
         except Exception as e:
             messagebox.showerror("Error", str(e), parent=self)
+
+    def _maybe_print_receipt(self, inv_number: str, inv_date: str, items: list):
+        """Print receipt if printer is enabled. Auto-print or ask based on config."""
+        try:
+            import thermal_receipt
+            if not thermal_receipt.is_enabled():
+                return
+            cfg = thermal_receipt.load_config()
+            auto = cfg.get("auto_print", True)
+            if not auto:
+                if not messagebox.askyesno(
+                        "Print Receipt",
+                        f"Print receipt for bill {inv_number}?",
+                        parent=self):
+                    return
+            firm = dict(db.get_firm_settings() or {})
+            cashier = (self.current_user.get("full_name")
+                       or self.current_user.get("username", "Cashier"))
+            # Compute totals from items (same logic as create_invoice, intra supply)
+            subtotal = gst_total = 0.0
+            for it in items:
+                taxable = round(it["quantity"] * it["unit_price"], 2)
+                gst_amt = round(taxable * it["gst_rate"] / 100, 2)
+                subtotal  += taxable
+                gst_total += gst_amt
+            grand_total = round(subtotal + gst_total, 2)
+            thermal_receipt.print_receipt(
+                firm           = firm,
+                items          = items,
+                invoice_number = inv_number,
+                invoice_date   = inv_date,
+                cashier_name   = cashier,
+                subtotal       = round(subtotal, 2),
+                gst_total      = round(gst_total, 2),
+                grand_total    = grand_total,
+            )
+        except Exception as e:
+            messagebox.showerror("Print Error",
+                                 f"Receipt not printed:\n{e}", parent=self)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
