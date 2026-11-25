@@ -15070,11 +15070,20 @@ class CashierApp(ctk.CTk):
     # ── cart management ────────────────────────────────────────────────────────
 
     def _add_to_cart(self, product: dict):
+        stock = int(product.get("stock_quantity") or 0)
         for entry in self._cart:
             if entry["product"]["id"] == product["id"]:
+                if entry["qty"] >= stock:
+                    messagebox.showwarning(
+                        "Stock limit", f"Only {stock} unit(s) available.", parent=self)
+                    return
                 entry["qty"] += 1
                 self._refresh_cart()
                 return
+        if stock < 1:
+            messagebox.showwarning(
+                "Out of stock", f"{product['name']} is out of stock.", parent=self)
+            return
         self._cart.append({"product": product, "qty": 1})
         self._refresh_cart()
         # Delay search clear: setting it synchronously triggers _refresh_results() which
@@ -15131,7 +15140,14 @@ class CashierApp(ctk.CTk):
         self._total_lbl.configure(text=f"₹ {grand:,.2f}")
 
     def _change_qty(self, idx: int, delta: int):
-        self._cart[idx]["qty"] = max(1, self._cart[idx]["qty"] + delta)
+        entry = self._cart[idx]
+        stock = int(entry["product"].get("stock_quantity") or 0)
+        new_qty = entry["qty"] + delta
+        if new_qty > stock:
+            messagebox.showwarning(
+                "Stock limit", f"Only {stock} unit(s) available.", parent=self)
+            return
+        entry["qty"] = max(1, new_qty)
         self._refresh_cart()
 
     def _remove_item(self, idx: int):
@@ -15291,6 +15307,22 @@ class CashierApp(ctk.CTk):
     def _save_bill(self):
         if not self._cart:
             messagebox.showwarning("Empty Cart", "Add items before saving.", parent=self)
+            return
+        # Re-check live stock before committing
+        live = {p["id"]: int(p.get("stock_quantity") or 0)
+                for p in self._all_products}
+        over = []
+        for e in self._cart:
+            pid   = e["product"]["id"]
+            avail = live.get(pid, 0)
+            if e["qty"] > avail:
+                over.append(f"{e['product']['name']}: need {e['qty']}, only {avail} in stock")
+        if over:
+            messagebox.showerror(
+                "Stock exceeded",
+                "Cannot save bill — quantity exceeds available stock:\n\n" + "\n".join(over),
+                parent=self,
+            )
             return
         try:
             client_id  = (self._selected_client["id"] if self._selected_client

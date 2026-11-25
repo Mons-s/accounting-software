@@ -1982,8 +1982,8 @@ def add_journal_entry(entry_date, narration, reference, lines):
     lines: list of {"account_id": int, "debit": float, "credit": float}
     Raises ValueError if entry is unbalanced.
     """
-    total_dr = sum(l["debit"]  for l in lines)
-    total_cr = sum(l["credit"] for l in lines)
+    total_dr = sum(float(l["debit"])  for l in lines)
+    total_cr = sum(float(l["credit"]) for l in lines)
     if abs(total_dr - total_cr) > 0.01:
         raise ValueError(f"Journal not balanced: Dr {total_dr:.2f} ≠ Cr {total_cr:.2f}")
     with get_connection() as conn:
@@ -1996,7 +1996,7 @@ def add_journal_entry(entry_date, narration, reference, lines):
         for l in lines:
             cur.execute(
                 "INSERT INTO journal_entry_lines (journal_id,account_id,debit,credit) VALUES (?,?,?,?)",
-                (je_id, l["account_id"], l["debit"], l["credit"]),
+                (je_id, l["account_id"], float(l["debit"]), float(l["credit"])),
             )
         conn.commit()
     return je_id
@@ -2035,21 +2035,24 @@ def post_invoice_journal(invoice_id):
         client = conn.execute("SELECT name FROM clients WHERE id=?", (inv["client_id"],)).fetchone()
         narration = f"Sales Invoice {inv['invoice_number']} - {client['name'] if client else 'Client'}"
 
+        def _f(v):
+            return float(v) if v is not None else 0.0
+
         lines = [
-            {"account_id": ar,    "debit": inv["grand_total"], "credit": 0.0},
-            {"account_id": sales, "debit": 0.0, "credit": inv["subtotal"]},
+            {"account_id": ar,    "debit": _f(inv["grand_total"]), "credit": 0.0},
+            {"account_id": sales, "debit": 0.0, "credit": _f(inv["subtotal"])},
         ]
         if inv["supply_type"] == "intra":
             cgst = acct("2101")
             sgst = acct("2102")
-            if cgst and inv["cgst_total"] > 0:
-                lines.append({"account_id": cgst, "debit": 0.0, "credit": inv["cgst_total"]})
-            if sgst and inv["sgst_total"] > 0:
-                lines.append({"account_id": sgst, "debit": 0.0, "credit": inv["sgst_total"]})
+            if cgst and _f(inv["cgst_total"]) > 0:
+                lines.append({"account_id": cgst, "debit": 0.0, "credit": _f(inv["cgst_total"])})
+            if sgst and _f(inv["sgst_total"]) > 0:
+                lines.append({"account_id": sgst, "debit": 0.0, "credit": _f(inv["sgst_total"])})
         else:
             igst = acct("2103")
-            if igst and inv["igst_total"] > 0:
-                lines.append({"account_id": igst, "debit": 0.0, "credit": inv["igst_total"]})
+            if igst and _f(inv["igst_total"]) > 0:
+                lines.append({"account_id": igst, "debit": 0.0, "credit": _f(inv["igst_total"])})
 
     add_journal_entry(inv["invoice_date"], narration, inv["invoice_number"], lines)
 
