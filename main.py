@@ -740,8 +740,9 @@ class Sidebar(ctk.CTkFrame):
             for key in visible:
                 label = nav_dict.get(key, key)
                 row = ctk.CTkFrame(nav_scroll, fg_color="transparent",
-                                   corner_radius=0)
+                                   corner_radius=0, height=38)
                 row.pack(fill="x", pady=1)
+                row.pack_propagate(False)
 
                 strip = ctk.CTkFrame(row, width=3,
                                      fg_color="transparent", corner_radius=0)
@@ -2095,7 +2096,7 @@ class ProductDialog(BaseDialog):
 
     def _build(self):
         p = dict(self.product) if self.product else {}
-        self.geometry("460x700")
+        self.geometry("460x740")
         self.name      = self._field(self, "Name *",               p.get("name", ""))
         self.sku       = self._field(self, "SKU *",                 p.get("sku", ""))
         self.desc      = self._field(self, "Description",           p.get("description", ""))
@@ -2105,6 +2106,7 @@ class ProductDialog(BaseDialog):
         self.threshold = self._field(self, "Low Stock Threshold *", p.get("low_stock_threshold", "10"))
         self.unit      = self._field(self, "Unit (pcs/kg/mtrs...)", p.get("unit", "pcs"))
         self.hsn       = self._field(self, "HSN Code",              p.get("hsn_code", ""))
+        self.category  = self._field(self, "Category",              p.get("category", ""))
 
         ctk.CTkLabel(self, text="GST Rate (%)", text_color="#95a5a6",
                      font=ctk.CTkFont(size=11)).pack(anchor="w", padx=24, pady=(8, 0))
@@ -2130,10 +2132,12 @@ class ProductDialog(BaseDialog):
         if self.product:
             db.update_product(self.product["id"], name, sku, self.desc.get(),
                               price, stock, threshold, self.unit.get(),
-                              self.hsn.get(), gst_rate, cost_price)
+                              self.hsn.get(), gst_rate, cost_price,
+                              self.category.get())
         else:
             db.add_product(name, sku, self.desc.get(), price, stock, threshold,
-                           self.unit.get(), self.hsn.get(), gst_rate, cost_price)
+                           self.unit.get(), self.hsn.get(), gst_rate, cost_price,
+                           self.category.get())
         db.check_and_create_alerts()
         self.app.refresh_current()
         self.destroy()
@@ -14750,12 +14754,22 @@ class CashierApp(ctk.CTk):
         self.minsize(760, 540)
         self._cart: list[dict] = []          # {product, qty}
         self._all_products: list[dict] = []
+        self._active_category: str = "All"
+        self._cat_btns: dict = {}
         self._barcode_buf = ""
         self._barcode_ts  = 0.0
+        self._selected_client: dict | None = None   # loyalty customer lookup
+        self._payment_mode: str = "Cash"
+        self._pay_btns: dict   = {}
         # Phase 6: shift management
         self._shift_id:        int | None = None
         self._shift_cash:      float      = 0.0
         self._shift_opened_at: str        = ""
+        # Surface any silent Tkinter callback exception as a visible error dialog.
+        def _report_cb_exc(exc, val, tb):
+            import traceback
+            messagebox.showerror("POS Error", "".join(traceback.format_exception(exc, val, tb)), parent=self)
+        self.report_callback_exception = _report_cb_exc
         self._build()
         self._load_products()
         # Phase 4: multi-counter sync
@@ -14763,7 +14777,7 @@ class CashierApp(ctk.CTk):
         db_connection.start_reconnect_watcher()
         self._status_tick()   # start the 5-second status refresh loop
         self._stock_tick()    # start the 30-second stock polling loop
-        self.after(300, self._ensure_shift)
+        self.after(300, self._resume_existing_shift)
 
     # ── build UI ──────────────────────────────────────────────────────────────
 
@@ -14782,11 +14796,11 @@ class CashierApp(ctk.CTk):
                      text=f"Cashier: {self.current_user.get('full_name') or self.current_user.get('username','')}",
                      text_color="#94a3b8", font=ctk.CTkFont(size=12)).grid(
                          row=0, column=1, sticky="w", padx=8)
-        ctk.CTkButton(hdr, text="🔒  Shift", width=100, height=30,
+        self._shift_btn = ctk.CTkButton(hdr, text="🔓  Open Shift", width=120, height=30,
                       fg_color="#1e3a5f", hover_color="#2a4a6f",
                       font=ctk.CTkFont(size=12),
-                      command=self._close_shift_clicked).grid(
-                          row=0, column=2, padx=8, pady=10)
+                      command=self._close_shift_clicked)
+        self._shift_btn.grid(row=0, column=2, padx=8, pady=10)
         self._status_lbl = ctk.CTkLabel(
             hdr, text="● …", text_color="#94a3b8", font=ctk.CTkFont(size=11))
         self._status_lbl.grid(row=0, column=3, padx=14)
@@ -14804,8 +14818,12 @@ class CashierApp(ctk.CTk):
 
         # ── left panel ──
         left = ctk.CTkFrame(body, fg_color="#0d1424", corner_radius=10)
+        self._left_panel = left
         left.grid(row=0, column=0, padx=(14, 7), pady=14, sticky="nsew")
-        left.grid_rowconfigure(1, weight=1)
+        left.grid_rowconfigure(0, weight=0)
+        left.grid_rowconfigure(1, weight=0)
+        left.grid_rowconfigure(2, weight=0)
+        left.grid_rowconfigure(3, weight=1)
         left.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(left, text="Search product / scan barcode",
@@ -14819,22 +14837,37 @@ class CashierApp(ctk.CTk):
             placeholder_text="🔍  Type name or scan barcode…",
             height=38, font=ctk.CTkFont(size=13),
         )
-        search_entry.grid(row=1, column=0, padx=14, pady=(4, 8), sticky="ew")
+        search_entry.grid(row=1, column=0, padx=14, pady=(4, 4), sticky="ew")
         search_entry.focus()
 
         # Barcode scanner: bind key events on the whole window
         self.bind("<Key>", self._on_key)
 
+        # ── category tabs ──
+        self._cat_seg = ctk.CTkSegmentedButton(
+            left, values=["All"],
+            fg_color="#111827",
+            selected_color="#0d9488",
+            selected_hover_color="#0a7a70",
+            unselected_color="#1a2235",
+            unselected_hover_color="#2a3245",
+            text_color="#ffffff",
+            text_color_disabled="#94a3b8",
+            font=ctk.CTkFont(size=11),
+            height=30,
+            command=self._select_category,
+        )
+        self._cat_seg.grid(row=2, column=0, padx=14, pady=(0, 6), sticky="ew")
+
         self._results_frame = ctk.CTkScrollableFrame(
             left, fg_color="transparent", corner_radius=0)
-        self._results_frame.grid(row=2, column=0, sticky="nsew", padx=4, pady=(0, 8))
+        self._results_frame.grid(row=3, column=0, sticky="nsew", padx=4, pady=(0, 8))
         self._results_frame.grid_columnconfigure(0, weight=1)
-        left.grid_rowconfigure(2, weight=1)
 
         # ── right panel: cart ──
         right = ctk.CTkFrame(body, fg_color="#0d1424", corner_radius=10)
         right.grid(row=0, column=1, padx=(7, 14), pady=14, sticky="nsew")
-        right.grid_rowconfigure(1, weight=1)
+        right.grid_rowconfigure(2, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(right, text="🛒  Cart",
@@ -14842,24 +14875,92 @@ class CashierApp(ctk.CTk):
                      text_color="#2dd4bf").grid(
                          row=0, column=0, sticky="w", padx=14, pady=(12, 4))
 
+        # ── customer lookup bar ──
+        cust_bar = ctk.CTkFrame(right, fg_color="#111827", corner_radius=6)
+        cust_bar.grid(row=1, column=0, padx=14, pady=(0, 6), sticky="ew")
+        cust_bar.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(cust_bar, text="Customer", width=65,
+                     font=ctk.CTkFont(size=11), text_color="#94a3b8"
+                     ).grid(row=0, column=0, padx=(8, 4), pady=(6, 2))
+
+        self._phone_var = ctk.StringVar()
+        self._phone_entry = ctk.CTkEntry(
+            cust_bar, textvariable=self._phone_var,
+            placeholder_text="Phone number…", height=30,
+            font=ctk.CTkFont(size=12))
+        self._phone_entry.grid(row=0, column=1, padx=4, pady=(6, 2), sticky="ew")
+        self._phone_entry.bind("<Return>", lambda _: self._lookup_customer())
+
+        ctk.CTkButton(cust_bar, text="Find", width=52, height=30,
+                      fg_color="#1e3a5f", hover_color="#2a4a6f",
+                      font=ctk.CTkFont(size=11),
+                      command=self._lookup_customer
+                      ).grid(row=0, column=2, padx=(4, 8), pady=(6, 2))
+
+        self._cust_lbl = ctk.CTkLabel(
+            cust_bar, text="👤  Walk-in customer",
+            font=ctk.CTkFont(size=11), text_color="#64748b", anchor="w")
+        self._cust_lbl.grid(row=1, column=0, columnspan=3,
+                            sticky="w", padx=10, pady=(0, 6))
+
         self._cart_frame = ctk.CTkScrollableFrame(
             right, fg_color="transparent", corner_radius=0)
-        self._cart_frame.grid(row=1, column=0, sticky="nsew", padx=4)
+        self._cart_frame.grid(row=2, column=0, sticky="nsew", padx=4)
         self._cart_frame.grid_columnconfigure(0, weight=1)
 
         # totals + actions
         foot = ctk.CTkFrame(right, fg_color="transparent")
-        foot.grid(row=2, column=0, sticky="ew", padx=14, pady=10)
+        foot.grid(row=3, column=0, sticky="ew", padx=14, pady=10)
         foot.grid_columnconfigure(0, weight=1)
 
-        self._total_lbl = ctk.CTkLabel(
-            foot, text="TOTAL  ₹ 0.00",
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#2ecc71")
-        self._total_lbl.grid(row=0, column=0, sticky="w", pady=(0, 8))
+        # ── breakdown panel ──
+        bd = ctk.CTkFrame(foot, fg_color="#111827", corner_radius=6)
+        bd.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        bd.grid_columnconfigure(1, weight=1)
 
+        ctk.CTkLabel(bd, text="Subtotal", font=ctk.CTkFont(size=11),
+                     text_color="#64748b").grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+        self._subtotal_val = ctk.CTkLabel(bd, text="₹ 0.00",
+                                           font=ctk.CTkFont(size=11), text_color="#94a3b8", anchor="e")
+        self._subtotal_val.grid(row=0, column=1, sticky="e", padx=10, pady=(8, 2))
+
+        ctk.CTkLabel(bd, text="GST", font=ctk.CTkFont(size=11),
+                     text_color="#64748b").grid(row=1, column=0, sticky="w", padx=10, pady=2)
+        self._gst_val = ctk.CTkLabel(bd, text="₹ 0.00",
+                                      font=ctk.CTkFont(size=11), text_color="#94a3b8", anchor="e")
+        self._gst_val.grid(row=1, column=1, sticky="e", padx=10, pady=2)
+
+        ctk.CTkFrame(bd, fg_color="#1e2a3a", height=1).grid(
+            row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=4)
+
+        ctk.CTkLabel(bd, text="TOTAL", font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color="#2ecc71").grid(row=3, column=0, sticky="w", padx=10, pady=(2, 8))
+        self._total_lbl = ctk.CTkLabel(bd, text="₹ 0.00",
+                                        font=ctk.CTkFont(size=14, weight="bold"),
+                                        text_color="#2ecc71", anchor="e")
+        self._total_lbl.grid(row=3, column=1, sticky="e", padx=10, pady=(2, 8))
+
+        # ── payment mode selector ──
+        pay_row = ctk.CTkFrame(foot, fg_color="transparent")
+        pay_row.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        ctk.CTkLabel(pay_row, text="Pay via", font=ctk.CTkFont(size=11),
+                     text_color="#64748b").pack(side="left", padx=(0, 6))
+        for mode, icon in [("Cash", "💵"), ("UPI", "📱"), ("Card", "💳")]:
+            active = mode == "Cash"
+            btn = ctk.CTkButton(
+                pay_row, text=f"{icon} {mode}", height=30, width=82,
+                fg_color="#0d9488" if active else "#1a2235",
+                hover_color="#0a7a70" if active else "#2a3245",
+                text_color="#ffffff" if active else "#94a3b8",
+                font=ctk.CTkFont(size=11),
+                command=lambda m=mode: self._select_payment(m))
+            btn.pack(side="left", padx=3)
+            self._pay_btns[mode] = btn
+
+        # ── action buttons ──
         btn_row = ctk.CTkFrame(foot, fg_color="transparent")
-        btn_row.grid(row=1, column=0, sticky="ew")
+        btn_row.grid(row=2, column=0, sticky="ew")
         ctk.CTkButton(btn_row, text="🗑  Clear", width=100, height=36,
                       fg_color="#1a2235", hover_color="#2a3245",
                       command=self._clear_cart).pack(side="left", padx=(0, 8))
@@ -14870,16 +14971,53 @@ class CashierApp(ctk.CTk):
 
     # ── product loading & search ───────────────────────────────────────────────
 
+    @staticmethod
+    def _product_to_dict(p) -> dict:
+        """Convert a DB row to a plain dict, coercing decimal.Decimal → float."""
+        from decimal import Decimal
+        return {k: float(v) if isinstance(v, Decimal) else v for k, v in dict(p).items()}
+
     def _load_products(self):
-        self._all_products = [dict(p) for p in db.get_all_products()]
+        self._all_products = [self._product_to_dict(p) for p in db.get_all_products()]
+        self._refresh_results()
+        self.after(0, self._rebuild_category_tabs)
+
+    def _rebuild_category_tabs(self):
+        unique_cats = sorted({p.get("category") or "" for p in self._all_products if p.get("category")})
+        cats = ["All"] + unique_cats
+        if self._active_category not in cats:
+            self._active_category = "All"
+        self._cat_seg.destroy()
+        self._cat_seg = ctk.CTkSegmentedButton(
+            self._left_panel,
+            values=cats,
+            fg_color="#111827",
+            selected_color="#0d9488",
+            selected_hover_color="#0a7a70",
+            unselected_color="#1a2235",
+            unselected_hover_color="#2a3245",
+            text_color="#ffffff",
+            text_color_disabled="#94a3b8",
+            font=ctk.CTkFont(size=11),
+            height=30,
+            command=self._select_category,
+        )
+        self._cat_seg.grid(row=2, column=0, padx=14, pady=(0, 6), sticky="ew")
+        self._cat_seg.set(self._active_category)
+
+    def _select_category(self, cat: str):
+        self._active_category = cat
         self._refresh_results()
 
     def _refresh_results(self):
         for w in self._results_frame.winfo_children():
             w.destroy()
         q = self._search_var.get().strip().lower()
-        matches = [p for p in self._all_products
-                   if q in p["name"].lower() or q in (p.get("sku") or "").lower()] if q else self._all_products[:40]
+        pool = self._all_products
+        if self._active_category != "All":
+            pool = [p for p in pool if (p.get("category") or "") == self._active_category]
+        matches = [p for p in pool
+                   if q in p["name"].lower() or q in (p.get("sku") or "").lower()] if q else pool[:40]
         if not matches:
             ctk.CTkLabel(self._results_frame, text="No products found.",
                          text_color="#555").pack(pady=12)
@@ -14939,7 +15077,10 @@ class CashierApp(ctk.CTk):
                 return
         self._cart.append({"product": product, "qty": 1})
         self._refresh_cart()
-        self._search_var.set("")
+        # Delay search clear: setting it synchronously triggers _refresh_results() which
+        # destroys the clicked button while CTkButton is still running its post-command
+        # cleanup, causing a silent TclError that swallows the whole cart update.
+        self.after(1, lambda: self._search_var.set(""))
 
     def _refresh_cart(self):
         for w in self._cart_frame.winfo_children():
@@ -14947,14 +15088,18 @@ class CashierApp(ctk.CTk):
         if not self._cart:
             ctk.CTkLabel(self._cart_frame, text="Cart is empty.",
                          text_color="#555").pack(pady=20)
-            self._total_lbl.configure(text="TOTAL  ₹ 0.00")
+            self._subtotal_val.configure(text="₹ 0.00")
+            self._gst_val.configure(text="₹ 0.00")
+            self._total_lbl.configure(text="₹ 0.00")
             return
-        grand = 0.0
+        subtotal  = 0.0
+        gst_total = 0.0
         for idx, entry in enumerate(self._cart):
             p   = entry["product"]
             qty = entry["qty"]
-            line_total = round(qty * p["unit_price"], 2)
-            grand += line_total
+            line_total = round(qty * float(p["unit_price"]), 2)
+            gst_total += round(line_total * float(p.get("gst_rate") or 0) / 100, 2)
+            subtotal  += line_total
             row = ctk.CTkFrame(self._cart_frame, fg_color="#16213e", corner_radius=6)
             row.pack(fill="x", pady=2, padx=2)
             row.grid_columnconfigure(0, weight=1)
@@ -14980,7 +15125,10 @@ class CashierApp(ctk.CTk):
                           font=ctk.CTkFont(size=10),
                           command=lambda i=idx: self._remove_item(i)
                           ).grid(row=0, column=1, rowspan=2, padx=6, pady=4)
-        self._total_lbl.configure(text=f"TOTAL  ₹ {grand:,.2f}")
+        grand = round(subtotal + gst_total, 2)
+        self._subtotal_val.configure(text=f"₹ {subtotal:,.2f}")
+        self._gst_val.configure(text=f"₹ {gst_total:,.2f}")
+        self._total_lbl.configure(text=f"₹ {grand:,.2f}")
 
     def _change_qty(self, idx: int, delta: int):
         self._cart[idx]["qty"] = max(1, self._cart[idx]["qty"] + delta)
@@ -14993,6 +15141,16 @@ class CashierApp(ctk.CTk):
     def _clear_cart(self):
         self._cart.clear()
         self._refresh_cart()
+        self._clear_customer()
+
+    def _select_payment(self, mode: str):
+        self._payment_mode = mode
+        for m, btn in self._pay_btns.items():
+            active = m == mode
+            btn.configure(
+                fg_color="#0d9488" if active else "#1a2235",
+                hover_color="#0a7a70" if active else "#2a3245",
+                text_color="#ffffff" if active else "#94a3b8")
 
     # ── Phase 4: status / polling / sync ──────────────────────────────────────
 
@@ -15028,13 +15186,14 @@ class CashierApp(ctk.CTk):
     def _bg_load_products(self):
         """Load products in a background thread, then update UI on main thread."""
         try:
-            products = [dict(p) for p in db.get_all_products()]
+            products = [self._product_to_dict(p) for p in db.get_all_products()]
             self.after(0, lambda: self._apply_products(products))
         except Exception:
             pass
 
     def _apply_products(self, products):
         self._all_products = products
+        self._rebuild_category_tabs()
         self._refresh_results()
 
     def _on_cloud_reconnect(self):
@@ -15054,6 +15213,79 @@ class CashierApp(ctk.CTk):
         except Exception as e:
             messagebox.showerror("Sync Error", str(e), parent=self)
 
+    # ── customer loyalty lookup ────────────────────────────────────────────────
+
+    def _lookup_customer(self):
+        phone = self._phone_var.get().strip()
+        if not phone:
+            return
+        client = db.get_client_by_phone(phone)
+        if client:
+            self._set_customer(dict(client))
+        else:
+            self._prompt_new_customer(phone)
+
+    def _set_customer(self, client: dict):
+        self._selected_client = client
+        name = client.get("name", "Customer")
+        pts  = int(client.get("loyalty_points") or 0)
+        pts_text = f"  •  ⭐ {pts} pts" if pts else ""
+        self._cust_lbl.configure(
+            text=f"👤  {name}{pts_text}    ✕ clear",
+            text_color="#2dd4bf")
+        self._cust_lbl.bind("<Button-1>", lambda _: self._clear_customer())
+
+    def _clear_customer(self):
+        self._selected_client = None
+        if hasattr(self, "_phone_var"):
+            self._phone_var.set("")
+        if hasattr(self, "_cust_lbl"):
+            self._cust_lbl.configure(text="👤  Walk-in customer", text_color="#64748b")
+            self._cust_lbl.unbind("<Button-1>")
+
+    def _prompt_new_customer(self, phone: str):
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("New Customer")
+        dlg.geometry("340x170")
+        dlg.resizable(False, False)
+        dlg.attributes("-topmost", True)
+        dlg.lift()
+        dlg.update()          # force the window to render before grab
+        dlg.grab_set()
+        dlg.focus_force()
+
+        ctk.CTkLabel(dlg, text=f"Phone {phone} not found.",
+                     font=ctk.CTkFont(size=12)).pack(pady=(14, 2))
+        ctk.CTkLabel(dlg, text="Enter name to register as new customer:",
+                     font=ctk.CTkFont(size=11), text_color="#94a3b8").pack()
+
+        name_var = ctk.StringVar()
+        name_entry = ctk.CTkEntry(dlg, textvariable=name_var,
+                                   placeholder_text="Customer name", height=34)
+        name_entry.pack(fill="x", padx=20, pady=8)
+        name_entry.focus()
+
+        def _save_new():
+            name = name_var.get().strip()
+            if not name:
+                return
+            cid = db.add_client_quick(name, phone)
+            dlg.destroy()
+            self._set_customer({"id": cid, "name": name,
+                                 "phone": phone, "loyalty_points": 0})
+
+        name_entry.bind("<Return>", lambda _: _save_new())
+
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=(0, 10))
+        ctk.CTkButton(btn_row, text="Skip (Walk-in)", width=120, height=32,
+                      fg_color="#1a2235", hover_color="#2a3245",
+                      command=dlg.destroy).pack(side="left")
+        ctk.CTkButton(btn_row, text="Add Customer", height=32,
+                      fg_color="#0d9488", hover_color="#0a7a70",
+                      command=_save_new).pack(side="left", fill="x",
+                                              expand=True, padx=(8, 0))
+
     # ── save bill ──────────────────────────────────────────────────────────────
 
     def _save_bill(self):
@@ -15061,7 +15293,10 @@ class CashierApp(ctk.CTk):
             messagebox.showwarning("Empty Cart", "Add items before saving.", parent=self)
             return
         try:
-            client_id  = db.get_or_create_walkin_client()
+            client_id  = (self._selected_client["id"] if self._selected_client
+                          else db.get_or_create_walkin_client())
+            billed_to  = (self._selected_client.get("name", "Customer")
+                          if self._selected_client else "Walk-in")
             inv_number = db.generate_invoice_number()
             today      = datetime.now().strftime("%Y-%m-%d")
             items = [{
@@ -15080,19 +15315,34 @@ class CashierApp(ctk.CTk):
                 due_date=today,
                 supply_type="intra",
                 items=items,
+                notes=f"Payment: {self._payment_mode}",
                 status="Paid",
                 shift_id=self._shift_id,
             )
-            # Reload stock counts
+            # Reload stock counts, clear cart (which also clears customer selection)
             self._load_products()
             self._clear_cart()
             # ── Thermal receipt printing ──────────────────────────────────
             self._maybe_print_receipt(inv_number, today, items)
-            messagebox.showinfo("Bill Saved", f"Bill {inv_number} saved successfully.", parent=self)
+            messagebox.showinfo(
+                "Bill Saved",
+                f"Bill {inv_number} saved.\nCustomer: {billed_to}\nPaid via: {self._payment_mode}",
+                parent=self)
         except Exception as e:
-            messagebox.showerror("Error", str(e), parent=self)
+            import traceback
+            messagebox.showerror("Error", traceback.format_exc(), parent=self)
 
     # ── Phase 6: shift management ─────────────────────────────────────────────
+
+    def _resume_existing_shift(self):
+        """Pick up any already-open shift silently; never block the POS on startup."""
+        uid = int(self.current_user.get("id") or 0)
+        existing = db.get_open_shift(uid)
+        if existing:
+            self._shift_id        = existing["id"]
+            self._shift_cash      = float(existing.get("opening_cash") or 0)
+            self._shift_opened_at = str(existing.get("opened_at") or "")
+            self._shift_btn.configure(text="🔒  Close Shift")
 
     def _ensure_shift(self):
         """Check for an open shift; show OpenShiftDialog if none exists."""
@@ -15111,15 +15361,21 @@ class CashierApp(ctk.CTk):
         self._shift_id        = shift_id
         self._shift_cash      = opening_cash
         self._shift_opened_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+        self._shift_btn.configure(text="🔒  Close Shift")
 
     def _exit_no_shift(self):
         """User chose to exit instead of opening a shift."""
         self._shift_id = None
-        self.destroy()
+        self._quit_to_login()
 
     def _close_shift_clicked(self):
         if self._shift_id is None:
-            messagebox.showinfo("No Shift", "No shift is currently open.", parent=self)
+            # No shift open — offer to open one; Exit just closes the dialog
+            dlg_holder = []
+            dlg = OpenShiftDialog(self, self.current_user,
+                                  on_opened=self._on_shift_opened,
+                                  on_exit=lambda: dlg_holder[0].destroy() if dlg_holder else None)
+            dlg_holder.append(dlg)
             return
         CloseShiftDialog(self, self._shift_id, self._shift_cash,
                          on_closed=self._on_shift_closed)
@@ -15141,10 +15397,17 @@ class CashierApp(ctk.CTk):
             parent=self,
         )
         self._shift_id = None
+        self._shift_btn.configure(text="🔓  Open Shift")
+
+    def _quit_to_login(self):
+        """Destroy the POS and return to the login screen."""
+        super().destroy()
+        win = LoginWindow()
+        win.mainloop()
 
     def _on_shift_closed_then_exit(self, result: dict):
         self._on_shift_closed(result)
-        self.after(100, ctk.CTk.destroy, self)
+        self.after(100, self._quit_to_login)
 
     def destroy(self):
         if self._shift_id is not None:
@@ -15162,7 +15425,7 @@ class CashierApp(ctk.CTk):
                 CloseShiftDialog(self, self._shift_id, self._shift_cash,
                                  on_closed=self._on_shift_closed_then_exit)
                 return
-        super().destroy()
+        self._quit_to_login()
 
     def _maybe_print_receipt(self, inv_number: str, inv_date: str, items: list):
         """Print receipt if printer is enabled. Auto-print or ask based on config."""

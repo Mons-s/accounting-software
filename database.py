@@ -58,6 +58,7 @@ def initialize_db():
             address TEXT,
             gstin TEXT DEFAULT '',
             state TEXT DEFAULT '',
+            loyalty_points INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -257,6 +258,19 @@ def _seed_pg(conn):
             conn.execute(
                 "INSERT INTO firm_settings (shop_id) VALUES (?)", (shop_id,)
             )
+        # Add loyalty_points column if it doesn't exist yet
+        try:
+            conn.execute(
+                "ALTER TABLE clients ADD COLUMN IF NOT EXISTS loyalty_points INTEGER DEFAULT 0"
+            )
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS category TEXT DEFAULT ''"
+            )
+        except Exception:
+            pass
         conn.commit()
     except Exception:
         conn.rollback()
@@ -272,13 +286,15 @@ def _migrate_db():
             return
         existing = {col[1] for col in conn.execute("PRAGMA table_info(clients)").fetchall()}
         for col, ddl in [("gstin", "TEXT DEFAULT ''"), ("state", "TEXT DEFAULT ''"),
-                         ("credit_limit", "REAL DEFAULT 0")]:
+                         ("credit_limit", "REAL DEFAULT 0"),
+                         ("loyalty_points", "INTEGER DEFAULT 0")]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE clients ADD COLUMN {col} {ddl}")
 
         existing = {col[1] for col in conn.execute("PRAGMA table_info(products)").fetchall()}
         for col, ddl in [("hsn_code", "TEXT DEFAULT ''"), ("gst_rate", "REAL DEFAULT 18.0"),
-                         ("cost_price", "REAL DEFAULT 0.0")]:
+                         ("cost_price", "REAL DEFAULT 0.0"),
+                         ("category", "TEXT DEFAULT ''")]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE products ADD COLUMN {col} {ddl}")
 
@@ -911,6 +927,28 @@ def get_or_create_walkin_client() -> int:
         return row["id"] if isinstance(row, dict) else row[0]
 
 
+def get_client_by_phone(phone: str):
+    """Return the first client matching this phone number, or None."""
+    phone = (phone or "").strip()
+    if not phone:
+        return None
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM clients WHERE phone = ? LIMIT 1", (phone,)
+        ).fetchone()
+
+
+def add_client_quick(name: str, phone: str) -> int:
+    """Add a minimal client record (name + phone) and return its id."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO clients (name, phone) VALUES (?, ?)", (name.strip(), phone.strip())
+        )
+        new_id = cur.lastrowid
+        conn.commit()
+        return new_id
+
+
 def add_client(name, email="", phone="", address="", gstin="", state="", credit_limit=0.0):
     with get_connection() as conn:
         conn.execute(
@@ -1132,26 +1170,28 @@ def get_low_stock_products():
 
 
 def add_product(name, sku, description, unit_price, stock_quantity,
-                low_stock_threshold, unit="pcs", hsn_code="", gst_rate=18.0, cost_price=0.0):
+                low_stock_threshold, unit="pcs", hsn_code="", gst_rate=18.0, cost_price=0.0,
+                category=""):
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO products
-               (name,sku,description,unit_price,stock_quantity,low_stock_threshold,unit,hsn_code,gst_rate,cost_price)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+               (name,sku,description,unit_price,stock_quantity,low_stock_threshold,unit,hsn_code,gst_rate,cost_price,category)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (name, sku, description, unit_price, stock_quantity,
-             low_stock_threshold, unit, hsn_code, gst_rate, cost_price),
+             low_stock_threshold, unit, hsn_code, gst_rate, cost_price, category),
         )
         conn.commit()
 
 
 def update_product(product_id, name, sku, description, unit_price, stock_quantity,
-                   low_stock_threshold, unit, hsn_code="", gst_rate=18.0, cost_price=0.0):
+                   low_stock_threshold, unit, hsn_code="", gst_rate=18.0, cost_price=0.0,
+                   category=""):
     with get_connection() as conn:
         conn.execute(
             """UPDATE products SET name=?,sku=?,description=?,unit_price=?,
-               stock_quantity=?,low_stock_threshold=?,unit=?,hsn_code=?,gst_rate=?,cost_price=? WHERE id=?""",
+               stock_quantity=?,low_stock_threshold=?,unit=?,hsn_code=?,gst_rate=?,cost_price=?,category=? WHERE id=?""",
             (name, sku, description, unit_price, stock_quantity,
-             low_stock_threshold, unit, hsn_code, gst_rate, cost_price, product_id),
+             low_stock_threshold, unit, hsn_code, gst_rate, cost_price, category, product_id),
         )
         conn.commit()
 
@@ -1499,11 +1539,14 @@ def create_invoice(invoice_number, client_id, invoice_date, due_date,
     """
     subtotal = 0.0
     cgst_total = sgst_total = igst_total = 0.0
+    discount_pct = float(discount_pct or 0)
 
     computed = []
     for it in items:
-        taxable = round(it["quantity"] * it["unit_price"], 2)
-        gst_rate = it["gst_rate"]
+        unit_price = float(it["unit_price"])
+        quantity   = int(it["quantity"])
+        gst_rate   = float(it.get("gst_rate") or 0)
+        taxable = round(quantity * unit_price, 2)
         if supply_type == "intra":
             half = gst_rate / 2
             cgst_amt = round(taxable * half / 100, 2)
@@ -1519,12 +1562,15 @@ def create_invoice(invoice_number, client_id, invoice_date, due_date,
             igst_total += igst_amt
         subtotal += taxable
         computed.append({**it,
+                         "quantity":     quantity,
+                         "unit_price":   unit_price,
+                         "gst_rate":     gst_rate,
                          "taxable_value": taxable,
-                         "cgst_rate": gst_rate / 2 if supply_type == "intra" else 0,
+                         "cgst_rate": gst_rate / 2 if supply_type == "intra" else 0.0,
                          "cgst_amt": cgst_amt,
-                         "sgst_rate": gst_rate / 2 if supply_type == "intra" else 0,
+                         "sgst_rate": gst_rate / 2 if supply_type == "intra" else 0.0,
                          "sgst_amt": sgst_amt,
-                         "igst_rate": gst_rate if supply_type == "inter" else 0,
+                         "igst_rate": gst_rate if supply_type == "inter" else 0.0,
                          "igst_amt": igst_amt,
                          "total_amt": round(total_amt, 2)})
 
